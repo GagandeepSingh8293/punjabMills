@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Database, Plus, Pencil } from "lucide-react";
+import { Database, Plus, Pencil, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/ui/page-header";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { useMastersStore } from "@/stores/masters";
 import { formatDate } from "@/lib/date";
+import { api } from "@/lib/api";
 import { MASTER_TYPES } from "@/types/masters";
 import type { MasterRecord, MasterType } from "@/types/masters";
 
@@ -61,15 +62,6 @@ const MASTER_UI: Record<
       { key: "hex", label: "Hex", placeholder: "#1D4ED8" },
     ],
   },
-  processors: {
-    label: "Processors",
-    singular: "Processor",
-    fields: [
-      { key: "name", label: "Name" },
-      { key: "contactName", label: "Contact Name" },
-      { key: "phone", label: "Phone" },
-    ],
-  },
   rate: {
     label: "Rates",
     singular: "Rate",
@@ -89,7 +81,18 @@ const MASTER_UI: Record<
   depth: {
     label: "Depths",
     singular: "Depth",
-    fields: [{ key: "name", label: "Name" }],
+    fields: [
+      { key: "name", label: "Name", placeholder: "e.g. Super Dark, or - for no depth" },
+    ],
+  },
+  shades: {
+    label: "Colour & Depth",
+    singular: "Colour & Depth",
+    fields: [
+      { key: "name", label: "Colour" },
+      { key: "depth", label: "Depth", placeholder: "e.g. Super Dark, or - for none" },
+      { key: "hex", label: "Hex", placeholder: "#1D4ED8" },
+    ],
   },
 };
 
@@ -102,6 +105,8 @@ export function MastersPage() {
   const [form, setForm] = useState<Record<string, unknown>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [lookupBusy, setLookupBusy] = useState(false);
+  const [lookupMsg, setLookupMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (records[activeType] === undefined) {
@@ -117,6 +122,7 @@ export function MastersPage() {
     setEditing(null);
     setForm({});
     setFormError(null);
+    setLookupMsg(null);
     setDialogOpen(true);
   };
 
@@ -127,7 +133,40 @@ export function MastersPage() {
     delete (base as Record<string, unknown>)["createdAt"];
     setForm(base as unknown as Record<string, unknown>);
     setFormError(null);
+    setLookupMsg(null);
     setDialogOpen(true);
+  };
+
+  const lookupGst = async () => {
+    const gstin = String(form.gstin ?? "").trim();
+    if (!gstin) {
+      setFormError("Enter a GSTIN first");
+      return;
+    }
+    if (gstin.length < 15) {
+      setFormError("GSTIN must be 15 characters");
+      return;
+    }
+    setFormError(null);
+    setLookupBusy(true);
+    setLookupMsg(null);
+    try {
+      const res = await api.gst.lookup(gstin);
+      if (res.found && res.customer) {
+        setForm((prev) => ({ ...prev, ...res.customer }));
+        setLookupMsg(
+          res.source === "local"
+            ? "Found among your saved customers. Review and save."
+            : `Found online for GSTIN ${gstin}. Review and save.`
+        );
+      } else {
+        setLookupMsg(res.message ?? "No GSTIN found locally or online — enter details manually.");
+      }
+    } catch (e) {
+      setLookupMsg(`Lookup failed: ${String(e)}`);
+    } finally {
+      setLookupBusy(false);
+    }
   };
 
   const submit = async () => {
@@ -248,6 +287,17 @@ export function MastersPage() {
           </DialogHeader>
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {activeType === "customers" && (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 sm:col-span-2">
+                <Search className="h-4 w-4 text-muted-foreground" />
+                <p className="text-sm text-muted-foreground">Search by GSTIN</p>
+                <Button size="sm" variant="outline" type="button" onClick={lookupGst} disabled={lookupBusy || saving}>
+                  {lookupBusy ? <Spinner size={14} /> : <Search className="h-3.5 w-3.5" />}
+                  Look up GST
+                </Button>
+                {lookupMsg && <span className="text-xs text-muted-foreground">{lookupMsg}</span>}
+              </div>
+            )}
             {ui.fields.map((f) => (
               <fieldset
                 key={f.key as string}

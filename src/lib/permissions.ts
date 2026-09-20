@@ -32,7 +32,7 @@ export const MODULE_DESCRIPTIONS: Record<Module, string> = {
   home: "View dashboard KPIs and summaries",
   challans: "Create and manage incoming & outgoing challans",
   billing: "Generate and manage invoices",
-  masters: "Manage customers, processors, rates, depths, colours and HSN codes",
+  masters: "Manage customers, rates, depths, shades, colours and HSN codes",
   sync: "Sync challans from a phone over the local network",
   profile: "View and edit your own account details",
 };

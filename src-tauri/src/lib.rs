@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+mod ocr;
 mod sync;
 mod util;
 
@@ -30,6 +31,7 @@ pub fn run() {
             commands::list_masters,
             commands::create_master,
             commands::update_master,
+            commands::lookup_gst,
             commands::get_tenant_settings,
             commands::save_tenant_settings,
             commands::get_job_work_settings,
@@ -51,6 +53,11 @@ pub fn run() {
             commands::global_search,
             commands::process_scan_capture,
             commands::get_scan_extraction,
+            commands::set_gemini_api_key,
+            commands::get_gemini_config,
+            commands::get_scan_photo,
+            commands::set_gst_api_key,
+            commands::get_gst_config,
             sync::get_sync_status,
         ])
         .run(tauri::generate_context!())

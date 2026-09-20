@@ -4,4 +4,4 @@ dist-ssr
 *.local
 src-tauri/target
 src-tauri/gen/schemas
-.DS_Store
+.DS_Storetsconfig.tsbuildinfo

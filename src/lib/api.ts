@@ -8,7 +8,19 @@ import type { DashboardStatsResponse } from "@/types/dashboard";
 import type { ActivityFeedResponse } from "@/types/activity";
 import type { GlobalSearchResponse } from "@/types/search";
 import type { ChallanFilterOptions } from "@/types/api";
-import type { SyncStatusPayload } from "@/types/socket-events";
+import type { SyncStatusPayload, GeminiConfigPayload, GstConfigPayload, ScanPhotoPayload } from "@/types/socket-events";
+
+export interface GstLookupResult {
+  found: boolean;
+  source: "local" | "online" | "none";
+  customer?: { name: string; gstin: string; address: string; state: string; stateCode: string };
+  message?: string;
+}
+
+export interface BulkInvoiceResult {
+  created: number;
+  invoices: Invoice[];
+}
 
 function err(message: unknown): Error {
   return new Error(String(message));
@@ -31,7 +43,7 @@ export const api = {
   },
 
   masters: {
-    list: (kind: MasterType): Promise<MasterRecord[]> =>
+    list: (kind: string): Promise<MasterRecord[]> =>
       invoke<MasterRecord[]>("list_masters", { kind }).catch((e) => Promise.reject(err(e))),
     create: (kind: MasterType, payload: Record<string, unknown>): Promise<MasterRecord> =>
       invoke<MasterRecord>("create_master", { kind, payload }).catch((e) => Promise.reject(err(e))),
@@ -82,12 +94,21 @@ export const api = {
       invoke<InvoiceListResponse>("list_invoices", params).catch((e) => Promise.reject(err(e))),
     get: (id: string): Promise<Invoice> =>
       invoke<Invoice>("get_invoice", { id }).catch((e) => Promise.reject(err(e))),
-    generate: (challanIds: string[]): Promise<Invoice> =>
-      invoke<Invoice>("generate_invoices", { challanIds }).catch((e) => Promise.reject(err(e))),
+    generate: (challanIds: string[]): Promise<BulkInvoiceResult> =>
+      invoke<BulkInvoiceResult>("generate_invoices", { challanIds }).catch((e) => Promise.reject(err(e))),
     updateStatus: (id: string, status: string): Promise<Invoice> =>
       invoke<Invoice>("update_invoice_status", { id, status }).catch((e) => Promise.reject(err(e))),
     updateDetails: (id: string, payload: Record<string, unknown>): Promise<Invoice> =>
       invoke<Invoice>("update_invoice_details", { id, payload }).catch((e) => Promise.reject(err(e))),
+  },
+
+  gst: {
+    lookup: (gstin: string): Promise<GstLookupResult> =>
+      invoke<GstLookupResult>("lookup_gst", { gstin }).catch((e) => Promise.reject(err(e))),
+    config: (): Promise<GstConfigPayload> =>
+      invoke<GstConfigPayload>("get_gst_config").catch((e) => Promise.reject(err(e))),
+    setApiKey: (key: string): Promise<void> =>
+      invoke<void>("set_gst_api_key", { key }).catch((e) => Promise.reject(err(e))),
   },
 
   dashboard: {
@@ -107,10 +128,16 @@ export const api = {
       invoke<void>("process_scan_capture", { sessionId }).catch((e) => Promise.reject(err(e))),
     getExtraction: (sessionId: string): Promise<unknown | null> =>
       invoke<unknown | null>("get_scan_extraction", { sessionId }).catch(() => null),
+    photo: (photoId: string): Promise<ScanPhotoPayload | null> =>
+      invoke<ScanPhotoPayload | null>("get_scan_photo", { photoId }).catch(() => null),
   },
 
   sync: {
     status: (): Promise<SyncStatusPayload> =>
       invoke<SyncStatusPayload>("get_sync_status").catch((e) => Promise.reject(err(e))),
+    config: (): Promise<GeminiConfigPayload> =>
+      invoke<GeminiConfigPayload>("get_gemini_config").catch((e) => Promise.reject(err(e))),
+    setApiKey: (key: string): Promise<void> =>
+      invoke<void>("set_gemini_api_key", { key }).catch((e) => Promise.reject(err(e))),
   },
 };

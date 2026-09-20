@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, Sparkles } from "lucide-react";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Header } from "@/components/layout/Header";
 import { CommandDialog } from "@/components/layout/CommandDialog";
@@ -13,7 +13,7 @@ import { useChallanStore } from "@/stores/challan";
 import { SYNC_EVENTS, type SyncedChallanPayload } from "@/types/socket-events";
 
 export function AppShell() {
-  const { mobileOpen, setMobileOpen, copilotOpen } = useSidebarStore();
+  const { mobileOpen, setMobileOpen, copilotOpen, setCopilotOpen } = useSidebarStore();
   const { pathname } = useLocation();
   const toast = useStateStore((s) => s.toast);
   const clearToast = useStateStore((s) => s.clearToast);
@@ -61,11 +61,19 @@ export function AppShell() {
         </div>
       </div>
       {toast && (
-        <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2 rounded-lg border bg-card px-4 py-3 text-sm shadow-lg animate-in slide-in-from-bottom-4 fade-in-0">
+        <div className="fixed right-5 z-50 bottom-20 flex items-center gap-2 rounded-lg border bg-card px-4 py-3 text-sm shadow-lg animate-in slide-in-from-bottom-4 fade-in-0">
           <CheckCircle2 className="h-4 w-4 text-[var(--success)]" />
           {toast}
         </div>
       )}
+      <button
+        onClick={() => setCopilotOpen(true)}
+        className="fixed bottom-5 right-5 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105"
+        aria-label="Open Copilot"
+        title="Copilot"
+      >
+        <Sparkles className="h-5 w-5" />
+      </button>
       {copilotOpen && <CopilotPanel />}
       <CommandDialog />
     </TooltipProvider>

@@ -34,7 +34,7 @@ export function challanPendingWeight(challan: ChallanRecord): number {
   return challan.pendingWeight ?? challanTotalWeight(challan) - challanDispatchedWeight(challan);
 }
 
-function distinctLineItemValues(challan: { lineItems: { colour?: string; depth?: string; hsnCode?: string }[] }, field: "colour" | "depth" | "hsnCode"): string[] {
+function distinctLineItemValues(challan: { lineItems: { colour?: string; depth?: string; hsnCode?: string; processName?: string }[] }, field: "colour" | "depth" | "hsnCode" | "processName"): string[] {
   return Array.from(
     new Set(
       challan.lineItems
@@ -60,4 +60,20 @@ export function challanColours(challan: ChallanRecord): string[] {
 
 export function challanDepths(challan: ChallanRecord): string[] {
   return distinctLineItemValues(challan, "depth");
+}
+
+export function challanProcesses(challan: ChallanRecord): string[] {
+  return distinctLineItemValues(challan, "processName");
+}
+
+/** Combined "Colour · Depth" values seen on the challan's line items ("" depth → colour only). */
+export function challanShades(challan: ChallanRecord): string[] {
+  return Array.from(
+    new Set(
+      challan.lineItems
+        .map((item) => [item.colour?.trim(), item.depth?.trim()])
+        .filter(([colour]) => Boolean(colour))
+        .map(([colour, depth]) => (depth && depth !== "-" ? `${colour} · ${depth}` : colour!))
+    )
+  );
 }

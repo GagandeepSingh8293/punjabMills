@@ -167,6 +167,53 @@ const CUSTOMER_JOBS: &[CustomerJob] = &[
 pub fn init(conn: &Connection) -> rusqlite::Result<()> {
     create_schema(conn)?;
     seed(conn)?;
+    migrate_additional_seed(conn)
+}
+
+/// Idempotent follow-up seed for databases created before these entries existed, so the
+/// already-seeded dev DB picks up the new depth options and the combined Colour & Depth master.
+fn migrate_additional_seed(conn: &Connection) -> rusqlite::Result<()> {
+    let depth_count: i64 = conn.query_row("SELECT COUNT(*) FROM depths WHERE name=?1", ["Super Dark"], |r| r.get(0)).unwrap_or(0);
+    if depth_count == 0 {
+        conn.execute("INSERT INTO depths (id, name, created_at) VALUES (?1,'Super Dark',?2)", params![nanoid::nanoid!(10), now_iso()])?;
+    }
+    let none_count: i64 = conn.query_row("SELECT COUNT(*) FROM depths WHERE name=?1", ["-"], |r| r.get(0)).unwrap_or(0);
+    if none_count == 0 {
+        conn.execute("INSERT INTO depths (id, name, created_at) VALUES (?1,'-',?2)", params![nanoid::nanoid!(10), now_iso()])?;
+    }
+
+    let shade_count: i64 = conn.query_row("SELECT COUNT(*) FROM shades", [], |r| r.get(0)).unwrap_or(0);
+    if shade_count == 0 {
+        let now = now_iso();
+        for (name, depth, hex) in [
+            ("Black", "Super Dark", "#000000"),
+            ("Black", "Dark", "#1F1F1F"),
+            ("Charcoal", "Extra Dark", "#36454F"),
+            ("Grey Melange", "Dark", "#5A5A5C"),
+            ("White", "-", "#FFFFFF"),
+            ("Off White", "-", "#F6F1E7"),
+            ("Maroon", "Dark", "#800000"),
+            ("Wine", "Dark", "#722F37"),
+            ("Mustard", "Medium", "#E1AD01"),
+            ("Rama Green", "Medium", "#17A452"),
+            ("Bottle Green", "Dark", "#006A4E"),
+            ("Royal Blue", "Medium", "#4169E1"),
+            ("Navy Blue", "Dark", "#1E3A8A"),
+            ("Sky Blue", "Light", "#87CEEB"),
+            ("Firozi", "Light", "#40E0D0"),
+            ("Rani Pink", "Dark", "#D6006D"),
+            ("Beige", "Light", "#F5F5DC"),
+            ("Peach", "Light", "#FFCBA4"),
+            ("Coral", "Medium", "#FF7F50"),
+            ("Lemon Yellow", "Light", "#FFF44F"),
+            ("Chocolate Brown", "Extra Dark", "#7B3F00"),
+        ] {
+            conn.execute(
+                "INSERT INTO shades (id, name, depth, hex, created_at) VALUES (?1,?2,?3,?4,?5)",
+                params![nanoid::nanoid!(10), name, depth, hex, now],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -270,6 +317,14 @@ fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS shades (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            depth TEXT NOT NULL,
+            hex TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS challans (
             id TEXT PRIMARY KEY,
             document_type TEXT NOT NULL,
@@ -304,9 +359,26 @@ fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             extracted_json TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS scan_photos (
+            id TEXT PRIMARY KEY,
+            session_id TEXT,
+            challan_id TEXT,
+            filename TEXT NOT NULL,
+            mime TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_challans_type ON challans(document_type);
         CREATE INDEX IF NOT EXISTS idx_challans_status ON challans(status);
         CREATE INDEX IF NOT EXISTS idx_invoices_satus ON invoices(status);
+        CREATE INDEX IF NOT EXISTS idx_scan_photos_session ON scan_photos(session_id);
+        CREATE INDEX IF NOT EXISTS idx_scan_photos_challan ON scan_photos(challan_id);
         "#,
     )
 }

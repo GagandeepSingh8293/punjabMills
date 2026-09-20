@@ -1,8 +1,9 @@
 import { useNavigate } from "react-router-dom";
-import { Search, Menu, Sparkles, LogOut, Settings, User as UserIcon } from "lucide-react";
+import { Search, Menu, LogOut, Settings, User as UserIcon, Moon, Sun } from "lucide-react";
 import { useUserStore } from "@/stores/user";
 import { useSidebarStore } from "@/stores/sidebar";
 import { useSearchStore } from "@/stores/search";
+import { useThemeStore } from "@/stores/theme";
 import { Avatar } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -17,7 +18,8 @@ export function Header() {
   const { user, logout } = useUserStore();
   const setMobileOpen = useSidebarStore((s) => s.setMobileOpen);
   const setSearchOpen = useSearchStore((s) => s.setOpen);
-  const setCopilotOpen = useSidebarStore((s) => s.setCopilotOpen);
+  const resolved = useThemeStore((s) => s.resolved);
+  const toggleTheme = useThemeStore((s) => s.toggle);
   const navigate = useNavigate();
 
   if (!user) return null;
@@ -43,11 +45,12 @@ export function Header() {
 
       <div className="ml-auto flex items-center gap-1">
         <button
-          onClick={() => setCopilotOpen(true)}
-          className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          onClick={toggleTheme}
+          className="inline-flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          aria-label={resolved === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          title={resolved === "dark" ? "Switch to light theme" : "Switch to dark theme"}
         >
-          <Sparkles className="h-4 w-4 text-[var(--info)]" />
-          <span className="hidden sm:inline">Copilot</span>
+          {resolved === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
         </button>
 
         <DropdownMenu>

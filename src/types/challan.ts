@@ -118,12 +118,30 @@ export const challanBaseSchema = z.object({
 export const challanSchema = challanBaseSchema.superRefine(addOutgoingRefinements);
 export type Challan = z.infer<typeof challanSchema>;
 
+/** Reference to a saved scan photo attached to a challan (full image via api.scan.photo). */
+export interface ScannedPhoto {
+  photoId: string;
+  mime: string;
+  size: number;
+  createdAt: string;
+}
+
+/** A linked incoming challan summary attached to an outgoing challan (number + date). */
+export interface LinkedIncomingSummary {
+  id: string;
+  challanNo: string;
+  challanDate: string;
+  party: string;
+}
+
 /** What the Rust commands return for a challan row: the stored record plus derived fields. */
 export type ChallanRecord = Challan & {
   id: string;
   billed: boolean;
   dispatchedWeight?: number;
   pendingWeight?: number;
+  photos?: ScannedPhoto[];
+  linkedIncoming?: LinkedIncomingSummary[];
 };
 
 export interface ChallanListResponse {

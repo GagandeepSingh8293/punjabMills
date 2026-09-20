@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ScanFlowDialog } from "@/components/scan/ScanFlowDialog";
 import {
   Table,
   TableBody,
@@ -22,7 +23,7 @@ import { PageLoader } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { formatNumber } from "@/lib/utils";
 import { formatDate } from "@/lib/date";
-import { challanEffectiveStatus, challanTotalWeight, challanHsnCodes, challanColours } from "@/lib/challan-helpers";
+import { challanEffectiveStatus, challanTotalWeight, challanHsnCodes, challanColours, challanProcesses, challanDepths, formatMultiValue } from "@/lib/challan-helpers";
 import { canAccessModule } from "@/lib/permissions";
 import { useChallanStore, type ChallanFilters } from "@/stores/challan";
 import { useUserStore } from "@/stores/user";
@@ -44,6 +45,7 @@ export function ChallanListPage({ documentType }: { documentType: DocumentType }
   const [search, setSearch] = useState(searchParams.getAll("q").join(", "));
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [options, setOptions] = useState<ChallanFilterOptions | null>(null);
+  const [scanTarget, setScanTarget] = useState<{ mode: "new" | "existing"; id?: string } | null>(null);
 
   const isOutgoing = documentType === "outgoing";
 
@@ -73,12 +75,19 @@ export function ChallanListPage({ documentType }: { documentType: DocumentType }
         description={`${total} record${total === 1 ? "" : "s"} · ${isOutgoing ? "goods dispatched to job-work units" : "grey fabric received from suppliers"}`}
         actions={
           <>
-            <Button asChild variant="outline">
-              <Link to="/scan">
+            {isOutgoing ? (
+              <Button asChild variant="outline">
+                <Link to="/scan?type=outgoing">
+                  <ScanLine />
+                  Scan
+                </Link>
+              </Button>
+            ) : (
+              <Button variant="outline" onClick={() => setScanTarget({ mode: "new" })}>
                 <ScanLine />
-                Scan
-              </Link>
-            </Button>
+                Scan from phone
+              </Button>
+            )}
             <Button asChild>
               <Link to={`/challans/new?type=${documentType}`}>
                 <Plus />
@@ -228,16 +237,19 @@ export function ChallanListPage({ documentType }: { documentType: DocumentType }
                 <TableHead>Date</TableHead>
                 <TableHead>Party</TableHead>
                 <TableHead>Vehicle</TableHead>
+                <TableHead className="hidden lg:table-cell">Process</TableHead>
+                <TableHead className="hidden lg:table-cell">Depth</TableHead>
                 <TableHead className="hidden md:table-cell">Lots</TableHead>
                 <TableHead className="text-right">Weight (kg)</TableHead>
                 <TableHead>Status</TableHead>
                 {isOutgoing && <TableHead>Billing</TableHead>}
+                {isOutgoing && <TableHead className="hidden md:table-cell">Incoming</TableHead>}
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {items.map((c) => (
-                <ChallanRow key={c.id} challan={c} isOutgoing={isOutgoing} canEdit={role ? canAccessModule(role, "challans") : false} />
+                <ChallanRow key={c.id} challan={c} isOutgoing={isOutgoing} canEdit={role ? canAccessModule(role, "challans") : false} onScan={() => setScanTarget({ mode: "existing", id: c.id })} />
               ))}
             </TableBody>
           </Table>
@@ -264,15 +276,25 @@ export function ChallanListPage({ documentType }: { documentType: DocumentType }
           </div>
         </div>
       )}
+
+      <ScanFlowDialog
+        open={scanTarget !== null}
+        onOpenChange={(open) => !open && setScanTarget(null)}
+        mode={scanTarget?.mode ?? "new"}
+        existingId={scanTarget?.id}
+      />
     </div>
   );
 }
 
-function ChallanRow({ challan, isOutgoing, canEdit }: { challan: ChallanRecord; isOutgoing: boolean; canEdit: boolean }) {
+function ChallanRow({ challan, isOutgoing, canEdit, onScan }: { challan: ChallanRecord; isOutgoing: boolean; canEdit: boolean; onScan: () => void }) {
   const status = challanEffectiveStatus(challan);
   const weight = challanTotalWeight(challan);
   const hsn = challanHsnCodes(challan);
   const colours = challanColours(challan);
+  const processes = challanProcesses(challan);
+  const depths = challanDepths(challan);
+  const incoming = challan.linkedIncoming ?? [];
 
   return (
     <TableRow>
@@ -287,6 +309,12 @@ function ChallanRow({ challan, isOutgoing, canEdit }: { challan: ChallanRecord; 
         <p className="text-xs text-muted-foreground">{challan.header.billing.state}</p>
       </TableCell>
       <TableCell>{challan.header.vehicleNo || "—"}</TableCell>
+      <TableCell className="hidden max-w-[160px] lg:table-cell">
+        <span className="truncate text-sm">{formatMultiValue(processes)}</span>
+      </TableCell>
+      <TableCell className="hidden max-w-[160px] lg:table-cell">
+        <span className="truncate text-sm">{formatMultiValue(depths)}</span>
+      </TableCell>
       <TableCell className="hidden max-w-[200px] md:table-cell">
         <div className="flex flex-wrap gap-1">
           {colours.slice(0, 2).map((color) => (
@@ -309,9 +337,36 @@ function ChallanRow({ challan, isOutgoing, canEdit }: { challan: ChallanRecord; 
           {challan.billed ? <StatusBadge status="billed" /> : <StatusBadge status="unbilled" />}
         </TableCell>
       )}
+      {isOutgoing && (
+        <TableCell className="hidden max-w-[160px] md:table-cell">
+          {incoming.length === 0 ? (
+            <span className="text-muted-foreground">—</span>
+          ) : (
+            <div className="space-y-0.5">
+              {incoming.map((inc) => (
+                <p key={inc.id} className="truncate text-xs">
+                  {inc.challanNo || "—"}
+                  <span className="text-muted-foreground"> · {formatDate(inc.challanDate)}</span>
+                </p>
+              ))}
+            </div>
+          )}
+        </TableCell>
+      )}
       <TableCell className="text-right">
         <div className="flex justify-end gap-1">
-          {canEdit && (
+          {canEdit && (isOutgoing ? (
+            <Button asChild variant="ghost" size="icon" title="Edit">
+              <Link to={`/challans/${challan.id}`}>
+                <Pencil className="h-4 w-4" />
+              </Link>
+            </Button>
+          ) : (
+            <Button variant="ghost" size="icon" title="Scan photo for this challan" onClick={onScan}>
+              <ScanLine className="h-4 w-4" />
+            </Button>
+          ))}
+          {!isOutgoing && canEdit && (
             <Button asChild variant="ghost" size="icon" title="Edit">
               <Link to={`/challans/${challan.id}`}>
                 <Pencil className="h-4 w-4" />

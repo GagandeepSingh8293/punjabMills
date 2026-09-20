@@ -24,8 +24,39 @@ export const SCAN_EVENTS = {
   TYPE_DETECTED: "challan:type-detected",
   FIELDS_UPDATED: "challan:fields-updated",
   EXTRACTION_FAILED: "challan:extraction-failed",
+  PHOTO_RECEIVED: "challan:photo-received",
   HEARTBEAT: "challan:heartbeat",
 } as const;
+
+/** Emitted when a photo lands in the desktop app from the phone capture page. */
+export type ScanPhotoReceivedPayload = {
+  sessionId: string;
+  photoId: string;
+  mime: string;
+  size: number;
+  createdAt: string;
+};
+
+/** Full base64-decodable photo returned by `get_scan_photo`. */
+export type ScanPhotoPayload = {
+  photoId: string;
+  mime: string;
+  size: number;
+  createdAt: string;
+  dataUrl: string;
+};
+
+/** Result of `get_gemini_config`. */
+export type GeminiConfigPayload = {
+  configured: boolean;
+  model: string;
+};
+
+/** Result of `get_gst_config`. */
+export type GstConfigPayload = {
+  configured: boolean;
+  provider: string;
+};
 
 /** Emitted when a challan is received from the phone-over-LAN sync server. */
 export const SYNC_EVENTS = {

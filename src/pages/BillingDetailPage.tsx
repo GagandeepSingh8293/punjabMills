@@ -92,6 +92,12 @@ const action = NEXT_ACTION[invoice.status];
         description={`Issued ${formatDate(invoice.invoiceDate)} · ${invoice.challanIds.length} challan${invoice.challanIds.length === 1 ? "" : "s"}`}
         actions={
           <>
+            <Button asChild variant="ghost">
+              <Link to="/billing">
+                <ArrowLeft />
+                Back
+              </Link>
+            </Button>
             {action && canBilling && invoice.status === "draft" && (
               <Button asChild variant="outline">
                 <Link to={`/billing/${invoice.id}/edit`}>

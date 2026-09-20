@@ -15,6 +15,7 @@ import { formatDate } from "@/lib/date";
 import { buildInvoicePreview } from "@/lib/billing";
 import { challanTotalWeight, challanEffectiveStatus } from "@/lib/challan-helpers";
 import { api } from "@/lib/api";
+import { useStateStore } from "@/stores/ui-state";
 import type { ChallanFilterOptions } from "@/types/api";
 import type { ChallanRecord } from "@/types/challan";
 import type { JobWorkSettings } from "@/types/masters";
@@ -22,6 +23,7 @@ import type { TenantSettings } from "@/types/tenant";
 
 export function BillingGeneratePage() {
   const navigate = useNavigate();
+  const pushToast = useStateStore((s) => s.pushToast);
   const [challans, setChallans] = useState<ChallanRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -42,12 +44,19 @@ export function BillingGeneratePage() {
 
   const selectedChallans = useMemo(() => challans.filter((c) => selected.has(c.id)), [challans, selected]);
 
-  const preview = useMemo(
+  /** One standalone bill per challan, so each keeps the outgoing challan's number. */
+  const previews = useMemo(
     () =>
-      selectedChallans.length > 0
-        ? buildInvoicePreview(selectedChallans, tenant?.stateCode, jobWork)
-        : null,
+      selectedChallans.map((challan) => ({
+        challan,
+        preview: buildInvoicePreview([challan], tenant?.stateCode, jobWork),
+      })),
     [selectedChallans, tenant, jobWork]
+  );
+
+  const totalGrand = useMemo(
+    () => previews.reduce((sum, p) => sum + (p.preview?.totals.grandTotal ?? 0), 0),
+    [previews]
   );
 
   const toggle = (id: string) => {
@@ -64,8 +73,9 @@ export function BillingGeneratePage() {
     setGenerating(true);
     setError(null);
     try {
-      const invoice = await api.invoices.generate(selectedChallans.map((c) => c.id));
-      navigate(`/billing/${invoice.id}`, { replace: true });
+      const result = await api.invoices.generate(selectedChallans.map((c) => c.id));
+      pushToast(`Generated ${result.created} bill${result.created === 1 ? "" : "s"}`);
+      navigate("/billing", { replace: true });
     } catch (e) {
       setError(String(e));
       setGenerating(false);
@@ -170,57 +180,55 @@ export function BillingGeneratePage() {
               {selectedChallans.length}
               <span className="text-base font-normal text-muted-foreground"> challan{selectedChallans.length === 1 ? "" : "s"}</span>
             </p>
-            {selectedChallans.length > 0 && preview && (
+            {selectedChallans.length > 0 && (
               <Button className="mt-3 w-full" onClick={generate} disabled={generating}>
                 {generating ? <Spinner size={16} /> : <FilePlus2 />}
-                Generate ₹{formatINR(preview.totals.grandTotal).replace("₹", "")}
+                Generate {selectedChallans.length} bill{selectedChallans.length === 1 ? "" : "s"} · ₹{formatINR(totalGrand).replace("₹", "")}
               </Button>
             )}
           </div>
 
-          {preview && (
+          {previews.length > 0 && (
             <div className="rounded-xl border bg-card">
               <div className="border-b px-4 py-3">
-                <p className="text-sm font-semibold">Invoice Preview</p>
+                <p className="text-sm font-semibold">
+                  One bill per challan — {previews.length} invoice{previews.length === 1 ? "" : "s"} to create
+                </p>
                 <p className="text-xs text-muted-foreground">
-                  {preview.totals.totalRoll} rolls · {formatNumber(preview.totals.totalWeight)} kg ·{" "}
-                  {tenant?.stateCode === selectedChallans[0]?.header.billing.stateCode ? "Intra-state" : "Inter-state"} supply
+                  Each invoice keeps its outgoing challan's number and carries that challan's items.
                 </p>
               </div>
               <div className="divide-y px-4 py-2 text-sm">
-                {preview.lineGroups.map((g) => (
-                  <div key={g.hsnCode} className="flex items-start justify-between gap-2 py-2">
-                    <div className="min-w-0">
-                      <p className="truncate font-medium">{g.particulars}</p>
-                      <p className="text-xs text-muted-foreground">
-                        HSN {g.hsnCode} · {g.totalRoll} rolls · {formatNumber(g.totalWeight)} kg
-                        {g.lotNos.length > 0 && ` · ${g.lotNos.join(", ")}`}
-                      </p>
+                {previews.map(({ challan, preview }) => (
+                  <div key={challan.id} className="py-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">{challan.header.challanNo}</p>
+                        <p className="truncate text-xs text-muted-foreground">{challan.header.billing.name}</p>
+                      </div>
+                      <span className="shrink-0 font-semibold tabular-nums">
+                        {preview ? formatINR(preview.totals.grandTotal) : "—"}
+                      </span>
                     </div>
-                    <span className="shrink-0 tabular-nums">{formatINR(g.amount)}</span>
+                    {preview && (
+                      <div className="mt-1 space-y-0.5">
+                        {preview.lineGroups.map((g) => (
+                          <p key={g.hsnCode} className="truncate text-xs text-muted-foreground">
+                            {g.particulars} · HSN {g.hsnCode} · {g.totalRoll} rolls · {formatNumber(g.totalWeight)} kg
+                            {g.lotNos.length > 0 && ` · ${g.lotNos.join(", ")}`}
+                          </p>
+                        ))}
+                        {preview.warnings.length > 0 && (
+                          <p className="flex items-center gap-1 text-xs text-[var(--warning)]">
+                            <TriangleAlert className="h-3.5 w-3.5" />
+                            {preview.warnings.length} line item{preview.warnings.length === 1 ? "" : "s"} without HSN skipped.
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
-                {preview.taxLines.map((t, i) => (
-                  <div key={i} className="flex items-center justify-between gap-2 py-2 text-muted-foreground">
-                    <span>
-                      {t.isInterState ? "IGST" : `CGST + SGST`} @ {t.gstRate}% (SAC {t.sacCode})
-                    </span>
-                    <span className="tabular-nums">{formatINR(t.cgst + t.sgst + t.igst)}</span>
-                  </div>
-                ))}
-                <div className="flex items-center justify-between gap-2 py-2 font-semibold">
-                  <span>Grand Total</span>
-                  <span className="tabular-nums">{formatINR(preview.totals.grandTotal)}</span>
-                </div>
               </div>
-              {preview.warnings.length > 0 && (
-                <div className="border-t bg-warning/10 px-4 py-2 text-xs">
-                  <p className="mb-1 flex items-center gap-1 font-medium text-[var(--warning)]">
-                    <TriangleAlert className="h-3.5 w-3.5" />
-                    {preview.warnings.length} line item{preview.warnings.length === 1 ? "" : "s"} without an HSN code have been skipped.
-                  </p>
-                </div>
-              )}
             </div>
           )}
         </div>

@@ -1,8 +1,9 @@
 use std::sync::Mutex;
 
+use base64::Engine;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use chrono::Datelike;
 use crate::util::{self, upsert_challan};
@@ -141,6 +142,7 @@ fn master_table(kind: &str) -> Result<&'static str, String> {
         "rate" => "rates",
         "rate-cards" => "rate_cards",
         "depth" => "depths",
+        "shades" => "shades",
         _ => return Err(format!("Unknown master type: {kind}")),
     })
 }
@@ -207,6 +209,12 @@ fn master_to_json(kind: &str, row: &rusqlite::Row) -> rusqlite::Result<Value> {
             let name: String = row.get(1)?;
             json!({ "id": id, "name": name, "createdAt": created_at })
         }
+        "shades" => {
+            let name: String = row.get(1)?;
+            let depth: String = row.get(2)?;
+            let hex: String = row.get(3)?;
+            json!({ "id": id, "name": name, "depth": depth, "hex": hex, "createdAt": created_at })
+        }
         _ => unreachable!(),
     })
 }
@@ -239,7 +247,7 @@ fn to_sql_value(v: Value) -> rusqlite::types::Value {
     }
 }
 
-const MASTER_COLUMNS: [(&str, &[&str]); 7] = [
+const MASTER_COLUMNS: [(&str, &[&str]); 8] = [
     ("customers", &["name", "gstin", "address", "state", "state_code"]),
     ("hsn-codes", &["code", "description", "tax_rate"]),
     ("colours", &["name", "hex"]),
@@ -247,6 +255,189 @@ const MASTER_COLUMNS: [(&str, &[&str]); 7] = [
     ("rate", &["value"]),
     ("rate-cards", &["customer_name", "process", "depth", "fabric_quality", "value"]),
     ("depth", &["name"]),
+    ("shades", &["name", "depth", "hex"]),
+];
+
+/// Look up customer details by GSTIN: prefer a saved customer, then the gstinapi.in
+/// online service (free tier) when an API key is configured. Returns
+/// `{ found, source, customer?, message? }`.
+#[tauri::command]
+pub fn lookup_gst(state: State<'_, DbState>, gstin: String) -> Result<Value, String> {
+    let normalized = gstin.trim().to_uppercase();
+    if normalized.is_empty() {
+        return Err("Enter a GSTIN first".to_string());
+    }
+
+    let local = {
+        let conn = conn(&state);
+        conn.query_row(
+            "SELECT name, gstin, address, state, state_code FROM customers WHERE upper(gstin)=?1",
+            [&normalized],
+            |r| {
+                let name: String = r.get(0)?;
+                let g: String = r.get(1)?;
+                let address: String = r.get(2)?;
+                let state: String = r.get(3)?;
+                let state_code: String = r.get(4)?;
+                Ok(json!({ "name": name, "gstin": g, "address": address, "state": state, "stateCode": state_code }))
+            },
+        )
+        .ok()
+    };
+    if let Some(customer) = local {
+        return Ok(json!({ "found": true, "source": "local", "customer": customer }));
+    }
+
+    let api_key = {
+        let conn = conn(&state);
+        conn.query_row(
+            "SELECT value FROM app_settings WHERE key='gst_api_key'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+    };
+    let Some(api_key) = api_key else {
+        return Ok(json!({
+            "found": false,
+            "source": "none",
+            "customer": Value::Null,
+            "message": "No online GST service configured. Add a free API key in Profile → GST Lookup, or enter details manually.",
+        }));
+    };
+
+    let url = format!("https://www.gstinapi.in/v1/gstin/{normalized}");
+    match ureq::get(&url)
+        .timeout(std::time::Duration::from_secs(10))
+        .set("x-api-key", &api_key)
+        .call()
+    {
+        Ok(resp) => match resp.into_json::<Value>() {
+            Ok(root) => {
+                let success = root.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+                if success {
+                    if let Some(data) = root.get("data") {
+                        let name = data
+                            .get("legal_name")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| data.get("trade_name").and_then(|v| v.as_str()));
+                        if let Some(name) = name {
+                            let address = data.get("address").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let state_code = data.get("state_code").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let state = STATE_NAMES
+                                .iter()
+                                .find(|(code, _)| *code == state_code.as_str())
+                                .map(|(_, name)| *name)
+                                .unwrap_or("")
+                                .to_string();
+                            return Ok(json!({
+                                "found": true,
+                                "source": "online",
+                                "customer": json!({
+                                    "name": name,
+                                    "gstin": normalized,
+                                    "address": address,
+                                    "state": if state.is_empty() { state_code.clone() } else { state },
+                                    "stateCode": state_code,
+                                }),
+                            }));
+                        }
+                    }
+                }
+                let msg = root
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("No online record found for this GSTIN");
+                Ok(json!({ "found": false, "source": "none", "customer": Value::Null, "message": msg }))
+            }
+            Err(_) => Ok(json!({
+                "found": false,
+                "source": "none",
+                "customer": Value::Null,
+                "message": "Online GST lookup returned an unreadable response.",
+            })),
+        },
+        Err(e) => Ok(json!({
+            "found": false,
+            "source": "none",
+            "customer": Value::Null,
+            "message": format!("Online GST lookup failed ({e})."),
+        })),
+    }
+}
+
+const GST_API_KEY_SETTING: &str = "gst_api_key";
+
+/// Set (or clear, with an empty string) the online GST lookup API key used by
+/// `lookup_gst`. Stored in `app_settings` alongside the Gemini key.
+#[tauri::command]
+pub fn set_gst_api_key(state: State<'_, DbState>, key: String) -> Result<(), String> {
+    let conn = conn(&state);
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![GST_API_KEY_SETTING, key.trim()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Whether online GST lookup is ready (a key is set) and which provider is used.
+#[tauri::command]
+pub fn get_gst_config(state: State<'_, DbState>) -> Result<Value, String> {
+    let conn = conn(&state);
+    let configured = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE key=?1",
+            [GST_API_KEY_SETTING],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    Ok(json!({ "configured": configured, "provider": "gstinapi.in" }))
+}
+
+/// GST state codes → state names, used to flesh out online GSTIN lookups.
+const STATE_NAMES: &[(&str, &str)] = &[
+    ("01", "Jammu & Kashmir"),
+    ("02", "Himachal Pradesh"),
+    ("03", "Punjab"),
+    ("04", "Chandigarh"),
+    ("05", "Uttarakhand"),
+    ("06", "Haryana"),
+    ("07", "Delhi"),
+    ("08", "Rajasthan"),
+    ("09", "Uttar Pradesh"),
+    ("10", "Bihar"),
+    ("11", "Sikkim"),
+    ("12", "Arunachal Pradesh"),
+    ("13", "Nagaland"),
+    ("14", "Manipur"),
+    ("15", "Mizoram"),
+    ("16", "Tripura"),
+    ("17", "Meghalaya"),
+    ("18", "Assam"),
+    ("19", "West Bengal"),
+    ("20", "Jharkhand"),
+    ("21", "Odisha"),
+    ("22", "Chhattisgarh"),
+    ("23", "Madhya Pradesh"),
+    ("24", "Gujarat"),
+    ("26", "Dadra and Nagar Haveli and Daman and Diu"),
+    ("27", "Maharashtra"),
+    ("29", "Karnataka"),
+    ("30", "Goa"),
+    ("31", "Lakshadweep"),
+    ("32", "Kerala"),
+    ("33", "Tamil Nadu"),
+    ("34", "Puducherry"),
+    ("35", "Andaman and Nicobar Islands"),
+    ("36", "Telangana"),
+    ("37", "Andhra Pradesh"),
+    ("38", "Ladakh"),
 ];
 
 #[tauri::command]
@@ -411,7 +602,8 @@ fn usize_arg(m: &Value, k: &str, default: usize) -> usize {
 }
 
 /// Mirror of `challanEffectiveStatus` support fields: add `billed`, and for incoming
-/// challans the dispatched/pending weight.
+/// challans the dispatched/pending weight; for outgoing challans the linked incoming
+/// challan number(s) and date(s).
 fn enrich_challan(conn: &Connection, c: &Value) -> Value {
     let id = c.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let incoming = acc(c, "documentType") == Some("incoming");
@@ -423,16 +615,78 @@ fn enrich_challan(conn: &Connection, c: &Value) -> Value {
             let total = util::challan_total_weight(c);
             map.insert("dispatchedWeight".to_string(), json!(dispatched));
             map.insert("pendingWeight".to_string(), json!(total - dispatched));
+        } else if acc(c, "documentType") == Some("outgoing") {
+            map.insert("linkedIncoming".to_string(), json!(linked_incoming_summary(conn, c)));
         }
     }
     out
+}
+
+/// For an outgoing challan, the incoming challan(s) it points at: { id, challanNo, challanDate, party }.
+fn linked_incoming_summary(conn: &Connection, challan: &Value) -> Vec<Value> {
+    challan
+        .get("header")
+        .and_then(|h| h.get("linkedIncomingChallanIds"))
+        .and_then(|v| v.as_array())
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| {
+                    let incoming_id = id.as_str()?;
+                    let incoming = util::challan_by_id(conn, incoming_id)?;
+                    if acc(&incoming, "documentType") != Some("incoming") {
+                        return None;
+                    }
+                    let no = incoming
+                        .get("header")
+                        .and_then(|h| h.get("challanNo"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let date = incoming
+                        .get("header")
+                        .and_then(|h| h.get("challanDate"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let party = incoming
+                        .get("header")
+                        .and_then(|h| h.get("billing"))
+                        .and_then(|b| b.get("name"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    Some(json!({ "id": incoming_id, "challanNo": no, "challanDate": date, "party": party }))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[tauri::command]
 pub fn get_challan(state: State<'_, DbState>, id: String) -> Result<Value, String> {
     let conn = conn(&state);
     let record = util::challan_by_id(&conn, &id).ok_or_else(|| "Not found".to_string())?;
-    Ok(enrich_challan(&conn, &record))
+    let mut enriched = enrich_challan(&conn, &record);
+    if let Value::Object(map) = &mut enriched {
+        map.insert("photos".to_string(), json!(collect_photos(&conn, &id)));
+    }
+    Ok(enriched)
+}
+
+/// Attach the saved scan-photo references for an incoming challan (id, mime, size, created).
+fn collect_photos(conn: &Connection, challan_id: &str) -> Vec<Value> {
+    let mut stmt = match conn.prepare(
+        "SELECT id, mime, size, created_at FROM scan_photos WHERE challan_id=?1 ORDER BY created_at",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt
+        .query_map(params![challan_id], |r| {
+            Ok(json!({ "photoId": r.get::<_, String>(0)?, "mime": r.get::<_, String>(1)?, "size": r.get::<_, i64>(2)?, "createdAt": r.get::<_, String>(3)? }))
+        })
+        .ok();
+    rows.map(|it| it.filter_map(|v| v.ok()).collect()).unwrap_or_default()
 }
 
 #[tauri::command]
@@ -607,6 +861,7 @@ pub fn create_challan(
 
     upsert_challan(&conn, &record).map_err(|e| e.to_string())?;
     record_scan_corrections(&conn, session_id.as_deref(), &id, &record);
+    link_scan_photos(&conn, session_id.as_deref(), &id);
     Ok(enrich_challan(&conn, &record))
 }
 
@@ -631,7 +886,19 @@ pub fn update_challan(
 
     upsert_challan(&conn, &record).map_err(|e| e.to_string())?;
     record_scan_corrections(&conn, session_id.as_deref(), &id, &record);
+    link_scan_photos(&conn, session_id.as_deref(), &id);
     Ok(enrich_challan(&conn, &record))
+}
+
+fn link_scan_photos(conn: &Connection, session_id: Option<&str>, challan_id: &str) {
+    if let Some(session) = session_id {
+        if !session.is_empty() {
+            let _ = conn.execute(
+                "UPDATE scan_photos SET challan_id=?1 WHERE session_id=?2 AND challan_id IS NULL",
+                params![challan_id, session],
+            );
+        }
+    }
 }
 
 fn distinct_opt<'a>(values: impl Iterator<Item = Option<&'a str>>) -> Vec<String> {
@@ -738,33 +1005,48 @@ pub fn generate_invoices(state: State<'_, DbState>, challan_ids: Vec<String>) ->
         }
     }
 
-    let refs: Vec<&Value> = challans.iter().collect();
-    let invoice = build_invoice(&conn, &refs)?;
-    util::upsert_invoice(&conn, &invoice).map_err(|e| e.to_string())?;
-    Ok(invoice)
+    // One standalone invoice per challan, so each bill keeps the outgoing challan's number.
+    let mut invoices: Vec<Value> = Vec::with_capacity(challans.len());
+    for c in &challans {
+        let invoice = build_invoice(&conn, c)?;
+        util::upsert_invoice(&conn, &invoice).map_err(|e| e.to_string())?;
+        invoices.push(invoice);
+    }
+    let created = invoices.len();
+    Ok(json!({ "created": created, "invoices": invoices }))
 }
 
-fn build_invoice(conn: &Connection, challans: &[&Value]) -> Result<Value, String> {
+fn build_invoice(conn: &Connection, challan: &Value) -> Result<Value, String> {
     let id = nanoid::nanoid!(10);
     let invoice_date = today();
-    let invoice_no = util::next_invoice_number(conn, &invoice_date).map_err(|e| e.to_string())?;
-    let first = challans[0];
-    let billing = first.get("header").and_then(|h| h.get("billing")).cloned().unwrap_or(Value::Null);
-    let shipping = first
+    let challan_no = challan
+        .get("header")
+        .and_then(|h| h.get("challanNo"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    // The bill keeps the outgoing challan's number so it can be tracked end-to-end.
+    let invoice_no = match challan_no {
+        Some(no) => no,
+        None => util::next_invoice_number(conn, &invoice_date).map_err(|e| e.to_string())?,
+    };
+    let billing = challan.get("header").and_then(|h| h.get("billing")).cloned().unwrap_or(Value::Null);
+    let shipping = challan
         .get("header")
         .and_then(|h| h.get("shipping"))
         .cloned()
         .filter(|v| !v.is_null())
         .or_else(|| Some(billing.clone()))
         .unwrap_or(Value::Null);
-    let line_data = util::compute_invoice_line_data(conn, challans);
+    let refs = [challan];
+    let line_data = util::compute_invoice_line_data(conn, &refs);
 
     Ok(json!({
         "id": id,
         "invoiceNo": invoice_no,
         "invoiceDate": invoice_date,
         "status": "draft",
-        "challanIds": challans.iter().map(|c| c.get("id").cloned().unwrap_or(Value::Null)).collect::<Vec<_>>(),
+        "challanIds": vec![challan.get("id").cloned().unwrap_or(Value::Null)],
         "header": { "billing": billing, "shipping": shipping },
         "lineGroups": line_data["lineGroups"].clone(),
         "warnings": line_data["warnings"].clone(),
@@ -1287,4 +1569,45 @@ fn log_correction(
             now_iso()
         ],
     );
+}
+
+/// Set (or clear, with an empty string) the Google Gemini API key used by the
+/// real photo-OCR pipeline. Stored in `app_settings`.
+#[tauri::command]
+pub fn set_gemini_api_key(state: State<'_, DbState>, key: String) -> Result<(), String> {
+    let conn = conn(&state);
+    crate::ocr::set_api_key(&conn, key.trim()).map_err(|e| e.to_string())
+}
+
+/// Whether OCR is ready (a Gemini API key is set) and which model is used.
+#[tauri::command]
+pub fn get_gemini_config(state: State<'_, DbState>) -> Result<Value, String> {
+    let conn = conn(&state);
+    Ok(json!({ "configured": crate::ocr::configured(&conn), "model": crate::ocr::MODEL }))
+}
+
+/// Return a saved scan photo as a base64 data URL so the UI can preview it.
+#[tauri::command]
+pub fn get_scan_photo(state: State<'_, DbState>, app: AppHandle, photo_id: String) -> Result<Value, String> {
+    let conn = conn(&state);
+    let row: Option<(String, String, i64, String)> = conn
+        .query_row(
+            "SELECT filename, mime, size, created_at FROM scan_photos WHERE id=?1",
+            params![photo_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .ok();
+    let Some((filename, mime, size, created_at)) = row else {
+        return Ok(Value::Null);
+    };
+    let dir = crate::ocr::photo_dir(&app.path().app_data_dir().map_err(|e| e.to_string())?);
+    let bytes = std::fs::read(dir.join(&filename)).map_err(|e| e.to_string())?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(json!({
+        "photoId": photo_id,
+        "mime": mime,
+        "size": size,
+        "createdAt": created_at,
+        "dataUrl": format!("data:{mime};base64,{b64}"),
+    }))
 }

@@ -1,21 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
-import { Check, Copy, Link2, Smartphone, ArrowRight, RefreshCw } from "lucide-react";
+import { Check, Copy, Link2, Smartphone, ArrowRight, RefreshCw, KeyRound, Sparkles, Save, Trash2 } from "lucide-react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { PageHeader } from "@/components/ui/page-header";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { api } from "@/lib/api";
-import { SYNC_EVENTS, type SyncStatusPayload, type SyncedChallanPayload } from "@/types/socket-events";
+import { SYNC_EVENTS, type GeminiConfigPayload, type SyncStatusPayload, type SyncedChallanPayload } from "@/types/socket-events";
 import type { ChallanRecord } from "@/types/challan";
 
 export function SyncPage() {
   const [status, setStatus] = useState<SyncStatusPayload | null>(null);
   const [copied, setCopied] = useState(false);
   const [recent, setRecent] = useState<ChallanRecord[]>([]);
+  const [config, setConfig] = useState<GeminiConfigPayload | null>(null);
+  const [apiKey, setApiKey] = useState("");
+  const [keySaved, setKeySaved] = useState(false);
 
   useEffect(() => {
     let unlisteners: UnlistenFn[] = [];
@@ -25,6 +30,7 @@ export function SyncPage() {
       .status()
       .then((s) => mounted && setStatus(s))
       .catch(() => mounted && setStatus({ running: false, error: "Could not reach the sync server." }));
+    api.sync.config().then((c) => mounted && setConfig(c)).catch(() => mounted && setConfig({ configured: false, model: "" }));
 
     (async () => {
       const events: [string, (e: { payload: unknown }) => void][] = [
@@ -79,7 +85,13 @@ export function SyncPage() {
         title="Sync from Phone"
         description="Open the link (or scan the QR) on any phone on the same Wi-Fi to submit challans straight into this desktop app."
         actions={
-          <Button variant="outline" onClick={() => void api.sync.status().then(setStatus)}>
+          <Button
+            variant="outline"
+            onClick={() => {
+              void api.sync.status().then(setStatus);
+              void api.sync.config().then(setConfig);
+            }}
+          >
             <RefreshCw />
             Refresh
           </Button>
@@ -163,6 +175,71 @@ export function SyncPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <KeyRound className="h-4 w-4" />
+            Scan AI
+            <Badge variant={config?.configured ? "success" : "warning"}>
+              {config?.configured ? "Configured" : "Key needed"}
+            </Badge>
+          </CardTitle>
+          <CardDescription>
+            Handwritten challan photos are read on this machine with Google Gemini — model{" "}
+            {config?.model || "…"}. Add a free API key so phone scans can extract fields. The key stays on this
+            device.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+            <div className="flex-1">
+              <Label htmlFor="gemini-key">Gemini API key</Label>
+              <Input
+                id="gemini-key"
+                type="password"
+                autoComplete="off"
+                value={apiKey}
+                onChange={(e) => {
+                  setApiKey(e.target.value);
+                  setKeySaved(false);
+                }}
+                placeholder={config?.configured ? "•••••••••• (already set — type to replace)" : "Paste your key…"}
+              />
+            </div>
+            <Button
+              onClick={() => {
+                void api.sync.setApiKey(apiKey.trim()).then(() => {
+                  api.sync.config().then(setConfig).catch(() => {});
+                  setApiKey("");
+                  setKeySaved(true);
+                  setTimeout(() => setKeySaved(false), 2500);
+                });
+              }}
+              disabled={!apiKey.trim()}
+            >
+              {keySaved ? <Check className="h-4 w-4" /> : <Save className="h-4 w-4" />}
+              {keySaved ? "Saved" : "Save key"}
+            </Button>
+            {config?.configured && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  void api.sync.setApiKey("").then(() => api.sync.config().then(setConfig).catch(() => {}));
+                }}
+              >
+                <Trash2 className="h-4 w-4" />
+                Remove
+              </Button>
+            )}
+          </div>
+          <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+            <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            Create a key at <span className="font-medium">aistudio.google.com/apikey</span> — photos are sent to
+            Google only while scanning.
+          </p>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardContent className="flex flex-wrap items-center gap-3 p-4 text-sm">

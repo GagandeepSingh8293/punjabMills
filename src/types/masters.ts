@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { GSTIN_PATTERN, HSN_CODE_PATTERN } from "@/types/challan";
 
-export const MASTER_TYPES = ["customers", "hsn-codes", "colours", "processors", "rate", "rate-cards", "depth"] as const;
+export const MASTER_TYPES = ["customers", "hsn-codes", "colours", "rate", "rate-cards", "depth", "shades"] as const;
 export type MasterType = (typeof MASTER_TYPES)[number];
 
 export const HEX_COLOUR_PATTERN = /^#[0-9A-Fa-f]{6}$/;
@@ -77,6 +77,16 @@ export const depthSchema = z.object({
 export type DepthInput = z.infer<typeof depthSchema>;
 export type DepthRecord = DepthInput & { id: string; createdAt: string };
 
+export const shadeSchema = z.object({
+  name: z.string().min(1, "Colour name is required"),
+  depth: z.string().min(1, "Depth is required (use '-' for no depth)"),
+  hex: z.string().refine((v) => HEX_COLOUR_PATTERN.test(v), {
+    message: "Enter a valid hex colour, e.g. #1D4ED8",
+  }),
+});
+export type ShadeInput = z.infer<typeof shadeSchema>;
+export type ShadeRecord = ShadeInput & { id: string; createdAt: string };
+
 export const jobWorkSettingsSchema = z.object({
   sacCode: z.string().refine((v) => HSN_CODE_PATTERN.test(v), {
     message: "SAC code must be 4, 6 or 8 digits",
@@ -115,7 +125,9 @@ export type MasterRecordFor<T extends MasterType> = T extends "customers"
           ? RateRecord
           : T extends "rate-cards"
             ? RateCardRecord
-            : DepthRecord;
+            : T extends "depth"
+              ? DepthRecord
+              : ShadeRecord;
 
 export type MasterRecord =
   | Customer
@@ -124,7 +136,8 @@ export type MasterRecord =
   | ProcessorRecord
   | RateRecord
   | RateCardRecord
-  | DepthRecord;
+  | DepthRecord
+  | ShadeRecord;
 
 export const emptyCustomer = (): CustomerInput => ({ name: "", gstin: "", address: "", state: "", stateCode: "" });
 export const emptyHsnCode = (): HsnCodeInput => ({ code: "", description: "", taxRate: 5 });
@@ -139,15 +152,16 @@ export const emptyRateCard = (): RateCardInput => ({
   value: 0,
 });
 export const emptyDepth = (): DepthInput => ({ name: "" });
+export const emptyShade = (): ShadeInput => ({ name: "", depth: "", hex: "#1D4ED8" });
 
 export const EMPTY_MASTER_INPUT: Record<MasterType, Record<string, unknown>> = {
   customers: emptyCustomer() as unknown as Record<string, unknown>,
   "hsn-codes": emptyHsnCode() as unknown as Record<string, unknown>,
   colours: emptyColour() as unknown as Record<string, unknown>,
-  processors: emptyProcessor() as unknown as Record<string, unknown>,
   rate: emptyRate() as unknown as Record<string, unknown>,
   "rate-cards": emptyRateCard() as unknown as Record<string, unknown>,
   depth: emptyDepth() as unknown as Record<string, unknown>,
+  shades: emptyShade() as unknown as Record<string, unknown>,
 };
 
 function gstinMatchesStateCode(gstin: string, stateCode: string): boolean {
