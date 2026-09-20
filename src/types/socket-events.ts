@@ -26,3 +26,19 @@ export const SCAN_EVENTS = {
   EXTRACTION_FAILED: "challan:extraction-failed",
   HEARTBEAT: "challan:heartbeat",
 } as const;
+
+/** Emitted when a challan is received from the phone-over-LAN sync server. */
+export const SYNC_EVENTS = {
+  CHALLAN_SYNCED: "challan:synced",
+  STATUS: "sync:status",
+} as const;
+
+export type SyncStatusPayload = {
+  running: boolean;
+  port?: number;
+  url?: string;
+  ip?: string;
+  error?: string;
+};
+
+export type SyncedChallanPayload = import("./challan").ChallanRecord;

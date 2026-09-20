@@ -47,7 +47,7 @@ export function BillingDetailPage() {
 
   const advance = async () => {
     if (!invoice || !id) return;
-    const action = NEXT_ACTION[invoice.status];
+const action = NEXT_ACTION[invoice.status];
     if (!action) return;
     setActing(true);
     setError(null);
@@ -78,6 +78,7 @@ export function BillingDetailPage() {
   if (!invoice) return null;
 
   const action = NEXT_ACTION[invoice.status];
+  const shippingParty = invoice.header.shipping ?? invoice.header.billing;
 
   return (
     <div className="mx-auto max-w-5xl space-y-5">
@@ -132,10 +133,10 @@ export function BillingDetailPage() {
               </div>
               <div className="rounded-lg bg-muted/40 p-4">
                 <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Shipped To</p>
-                <p className="mt-1 font-medium">{invoice.header.shipping.name}</p>
-                <p className="text-sm text-muted-foreground">{invoice.header.shipping.address}</p>
+                <p className="mt-1 font-medium">{shippingParty.name}</p>
+                <p className="text-sm text-muted-foreground">{shippingParty.address}</p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  GSTIN: {invoice.header.shipping.gstin || "—"} · {invoice.header.shipping.state} ({invoice.header.shipping.stateCode})
+                  GSTIN: {shippingParty.gstin || "—"} · {shippingParty.state} ({shippingParty.stateCode})
                 </p>
               </div>
             </div>

@@ -39,6 +39,8 @@ export function BillingPrintPage() {
 
   if (!invoice || !tenant) return <PageLoader label="Preparing invoice…" />;
 
+  const shippingParty = invoice.header.shipping ?? invoice.header.billing;
+
   return (
     <div className="space-y-4">
       <div className="no-print flex flex-wrap items-center justify-between gap-3 print:hidden">
@@ -96,11 +98,11 @@ export function BillingPrintPage() {
             </div>
             <div className="border border-neutral-300 p-2">
               <p className="text-[10px] font-bold uppercase">Shipped To</p>
-              <p className="font-semibold">{invoice.header.shipping.name}</p>
-              <p>{invoice.header.shipping.address}</p>
-              <p>GSTIN: {invoice.header.shipping.gstin || "—"}</p>
+              <p className="font-semibold">{shippingParty.name}</p>
+              <p>{shippingParty.address}</p>
+              <p>GSTIN: {shippingParty.gstin || "—"}</p>
               <p>
-                {invoice.header.shipping.state} ({invoice.header.shipping.stateCode})
+                {shippingParty.state} ({shippingParty.stateCode})
               </p>
             </div>
           </div>

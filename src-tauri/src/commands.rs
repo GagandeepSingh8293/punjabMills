@@ -750,7 +750,13 @@ fn build_invoice(conn: &Connection, challans: &[&Value]) -> Result<Value, String
     let invoice_no = util::next_invoice_number(conn, &invoice_date).map_err(|e| e.to_string())?;
     let first = challans[0];
     let billing = first.get("header").and_then(|h| h.get("billing")).cloned().unwrap_or(Value::Null);
-    let shipping = first.get("header").and_then(|h| h.get("shipping")).cloned().unwrap_or(Value::Null);
+    let shipping = first
+        .get("header")
+        .and_then(|h| h.get("shipping"))
+        .cloned()
+        .filter(|v| !v.is_null())
+        .or_else(|| Some(billing.clone()))
+        .unwrap_or(Value::Null);
     let line_data = util::compute_invoice_line_data(conn, challans);
 
     Ok(json!({

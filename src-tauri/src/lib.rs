@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+mod sync;
 mod util;
 
 use std::sync::Mutex;
@@ -12,11 +13,12 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let db_path = dir.join("dyeai.db");
-            let conn = rusqlite::Connection::open(db_path)?;
+            let conn = rusqlite::Connection::open(&db_path)?;
             conn.pragma_update(None, "journal_mode", "WAL")?;
             conn.pragma_update(None, "foreign_keys", "ON")?;
             db::init(&conn)?;
             app.manage(commands::DbState(Mutex::new(conn)));
+            sync::start(app.handle().clone(), db_path.clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -49,6 +51,7 @@ pub fn run() {
             commands::global_search,
             commands::process_scan_capture,
             commands::get_scan_extraction,
+            sync::get_sync_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

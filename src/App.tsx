@@ -17,6 +17,7 @@ import { BillingEditPage } from "@/pages/BillingEditPage";
 import { BillingPrintPage } from "@/pages/BillingPrintPage";
 import { MastersPage } from "@/pages/MastersPage";
 import { ProfilePage } from "@/pages/ProfilePage";
+import { SyncPage } from "@/pages/SyncPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 
 function RequireAuth({ children }: { children: ReactNode }) {
@@ -81,6 +82,7 @@ export default function App() {
           <Route path="/billing/:id/edit" element={<BillingEditPage />} />
           <Route path="/billing/:id/print" element={<BillingPrintPage />} />
           <Route path="/masters" element={<MastersPage />} />
+          <Route path="/sync" element={<SyncPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>

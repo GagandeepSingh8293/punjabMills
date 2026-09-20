@@ -1,12 +1,12 @@
 import type { Role } from "@/types/user";
 
-export const MODULES = ["home", "challans", "billing", "masters", "profile"] as const;
+export const MODULES = ["home", "challans", "billing", "masters", "sync", "profile"] as const;
 export type Module = (typeof MODULES)[number];
 
 export const ROLE_MODULE_ACCESS: Record<Role, Module[]> = {
-  Admin: ["home", "challans", "billing", "masters", "profile"],
-  Supervisor: ["home", "challans", "billing", "masters", "profile"],
-  Operator: ["home", "challans", "profile"],
+  Admin: ["home", "challans", "billing", "masters", "sync", "profile"],
+  Supervisor: ["home", "challans", "billing", "masters", "sync", "profile"],
+  Operator: ["home", "challans", "sync", "profile"],
   Accounts: ["home", "billing", "profile"],
 };
 
@@ -15,6 +15,7 @@ const MODULE_HREF: Record<Module, string> = {
   challans: "/challans",
   billing: "/billing",
   masters: "/masters",
+  sync: "/sync",
   profile: "/profile",
 };
 
@@ -23,6 +24,7 @@ export const MODULE_LABELS: Record<Module, string> = {
   challans: "Challans",
   billing: "Billing",
   masters: "Master Data",
+  sync: "Sync",
   profile: "Profile",
 };
 
@@ -31,6 +33,7 @@ export const MODULE_DESCRIPTIONS: Record<Module, string> = {
   challans: "Create and manage incoming & outgoing challans",
   billing: "Generate and manage invoices",
   masters: "Manage customers, processors, rates, depths, colours and HSN codes",
+  sync: "Sync challans from a phone over the local network",
   profile: "View and edit your own account details",
 };
 
@@ -39,6 +42,7 @@ export function moduleForPath(pathname: string): Module {
   if (pathname.startsWith("/billing")) return "billing";
   if (pathname.startsWith("/masters")) return "masters";
   if (pathname.startsWith("/profile")) return "profile";
+  if (pathname.startsWith("/sync")) return "sync";
   return "home";
 }
 
@@ -51,7 +55,7 @@ export function canAccessPath(role: Role, pathname: string): boolean {
 }
 
 export function firstAccessibleHref(role: Role): string {
-  const preferredOrder: Module[] = ["home", "challans", "billing", "masters", "profile"];
+  const preferredOrder: Module[] = ["home", "challans", "billing", "masters", "sync", "profile"];
   const match = preferredOrder.find((mod) => canAccessModule(role, mod));
   return MODULE_HREF[match ?? "profile"];
 }

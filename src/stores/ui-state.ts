@@ -10,6 +10,7 @@ interface UiStateState {
   processors: ProcessorRecord[];
   hsnCodes: HsnCodeRecord[];
   pendingIncoming: ChallanRecord[];
+  toast: string | null;
   setCustomers: (records: MasterRecord[]) => void;
   setRateCards: (records: MasterRecord[]) => void;
   setColours: (records: MasterRecord[]) => void;
@@ -17,6 +18,8 @@ interface UiStateState {
   setProcessors: (records: MasterRecord[]) => void;
   setHsnCodes: (records: MasterRecord[]) => void;
   setPendingIncoming: (records: ChallanRecord[]) => void;
+  pushToast: (message: string) => void;
+  clearToast: () => void;
 }
 
 export const useStateStore = create<UiStateState>((set) => ({
@@ -27,6 +30,7 @@ export const useStateStore = create<UiStateState>((set) => ({
   processors: [],
   hsnCodes: [],
   pendingIncoming: [],
+  toast: null,
   setCustomers: (records) => set({ customers: records as Customer[] }),
   setRateCards: (records) => set({ rateCards: records as RateCardRecord[] }),
   setColours: (records) => set({ colours: records as ColourRecord[] }),
@@ -34,4 +38,6 @@ export const useStateStore = create<UiStateState>((set) => ({
   setProcessors: (records) => set({ processors: records as ProcessorRecord[] }),
   setHsnCodes: (records) => set({ hsnCodes: records as HsnCodeRecord[] }),
   setPendingIncoming: (pendingIncoming) => set({ pendingIncoming }),
+  pushToast: (message) => set({ toast: message }),
+  clearToast: () => set({ toast: null }),
 }));

@@ -1,4 +1,4 @@
-import { Database, Inbox, LayoutDashboard, Receipt, Truck, type LucideIcon } from "lucide-react";
+import { Database, Inbox, LayoutDashboard, Receipt, Smartphone, Truck, type LucideIcon } from "lucide-react";
 import { canAccessModule, type Module } from "@/lib/permissions";
 import type { Role } from "@/types/user";
 
@@ -33,6 +33,11 @@ const NAV_SECTIONS: NavSection[] = [
     id: "finance",
     label: "Finance",
     items: [{ module: "billing", label: "Billing", href: "/billing", icon: Receipt }],
+  },
+  {
+    id: "sync",
+    label: "Sync",
+    items: [{ module: "sync", label: "Sync from Phone", href: "/sync", icon: Smartphone }],
   },
   {
     id: "masters",

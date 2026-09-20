@@ -8,6 +8,7 @@ import type { DashboardStatsResponse } from "@/types/dashboard";
 import type { ActivityFeedResponse } from "@/types/activity";
 import type { GlobalSearchResponse } from "@/types/search";
 import type { ChallanFilterOptions } from "@/types/api";
+import type { SyncStatusPayload } from "@/types/socket-events";
 
 function err(message: unknown): Error {
   return new Error(String(message));
@@ -106,5 +107,10 @@ export const api = {
       invoke<void>("process_scan_capture", { sessionId }).catch((e) => Promise.reject(err(e))),
     getExtraction: (sessionId: string): Promise<unknown | null> =>
       invoke<unknown | null>("get_scan_extraction", { sessionId }).catch(() => null),
+  },
+
+  sync: {
+    status: (): Promise<SyncStatusPayload> =>
+      invoke<SyncStatusPayload>("get_sync_status").catch((e) => Promise.reject(err(e))),
   },
 };
