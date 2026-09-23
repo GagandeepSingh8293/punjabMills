@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 import { formatNumber } from "@/lib/utils";
 import { formatDate } from "@/lib/date";
 import { computeTotals, computeLineItemAmount, emptyHeader, emptyLineItem, isLineItemRowValid } from "@/types/challan";
-import type { ChallanHeader, ChallanRecord, DocumentType, LineItem, Party, ScannedPhoto } from "@/types/challan";
+import type { ChallanHeader, ChallanRecord, DispatchAllocation, DocumentType, LineItem, LinkedIncomingDetails, Party, ScannedPhoto } from "@/types/challan";
 import type { FieldsUpdatedPayload } from "@/types/socket-events";
 import type { ShadeRecord } from "@/types/masters";
 import { ScanFlowDialog } from "@/components/scan/ScanFlowDialog";
@@ -47,6 +47,11 @@ export function ChallanFormPage() {
   const [autoWeights, setAutoWeights] = useState<Record<string, boolean>>({});
   const [linked, setLinked] = useState<Record<string, boolean>>({});
   const [linkedSearch, setLinkedSearch] = useState("");
+  const [allocations, setAllocations] = useState<DispatchAllocation[]>([]);
+  const [details, setDetails] = useState<Record<string, LinkedIncomingDetails | null>>({});
+  const [manualWeights, setManualWeights] = useState<Record<string, boolean>>({});
+  const [weightOverride, setWeightOverride] = useState(false);
+  const [materialLoading, setMaterialLoading] = useState(false);
   const [loading, setLoading] = useState(isEdit);
   const [saving, setSaving] = useState<"draft" | "saved" | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
@@ -91,6 +96,7 @@ export function ChallanFormPage() {
         setLinked(
           Object.fromEntries((c.header.linkedIncomingChallanIds ?? []).map((x) => [x, true]))
         );
+        setAllocations(c.header.dispatchAllocations ?? []);
         setPhotos(c.photos ?? []);
         setLoading(false);
       }).catch(() => {
@@ -111,6 +117,22 @@ export function ChallanFormPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, sessionId, isEdit]);
+
+  // Refresh roll/weight availability whenever the set of linked incoming challans changes.
+  useEffect(() => {
+    const ids = Object.keys(linked).filter((k) => linked[k]);
+    if (ids.length === 0) {
+      setDetails({});
+      setMaterialLoading(false);
+      return;
+    }
+    setMaterialLoading(true);
+    api.challans
+      .linkedIncomingDetails(ids, isEdit && id ? id : undefined)
+      .then((list) => setDetails(Object.fromEntries(list.map((d) => [d.id, d]))))
+      .catch(() => setDetails({}))
+      .finally(() => setMaterialLoading(false));
+  }, [linked, isEdit, id]);
 
   const totals = useMemo(() => computeTotals(lineItems), [lineItems]);
   const showAmount = documentType === "outgoing";
@@ -172,18 +194,61 @@ export function ChallanFormPage() {
 
   /** Link an incoming challan to the outgoing one AND copy its party details into the header. */
   function useIncoming(challan: ChallanRecord) {
+    const removing = Boolean(linked[challan.id]);
     setLinked((prev) => {
       const next = { ...prev };
-      if (next[challan.id]) {
+      if (removing) {
         delete next[challan.id];
       } else {
         next[challan.id] = true;
       }
       return next;
     });
-    const billing = challan.header.billing;
-    const shipping = challan.header.shipping ?? billing;
-    setHeader((h) => ({ ...h, billing: { ...billing }, shipping: { ...shipping } }));
+    if (removing) {
+      setAllocations((prev) => prev.filter((a) => a.incomingChallanId !== challan.id));
+    } else {
+      const billing = challan.header.billing;
+      const shipping = challan.header.shipping ?? billing;
+      setHeader((h) => ({ ...h, billing: { ...billing }, shipping: { ...shipping } }));
+    }
+  }
+
+  function allocationFor(incomingId: string, idx: number): DispatchAllocation | undefined {
+    return allocations.find((a) => a.incomingChallanId === incomingId && a.incomingLineIdx === idx);
+  }
+
+  function setAllocation(incomingId: string, idx: number, patch: Partial<DispatchAllocation>) {
+    const existing = allocationFor(incomingId, idx);
+    const line = details[incomingId]?.lines.find((l) => l.idx === idx);
+    if (!existing) {
+      setAllocations((prev) => [
+        ...prev,
+        {
+          incomingChallanId: incomingId,
+          incomingLineId: line?.id ?? "",
+          incomingLineIdx: idx,
+          rolls: patch.rolls ?? 0,
+          weight: patch.weight ?? 0,
+        },
+      ]);
+      return;
+    }
+    const next = { ...existing, ...patch };
+    if (patch.rolls !== undefined && !manualWeights[`${incomingId}:${idx}`]) {
+      const avg = line && line.totalRolls > 0 ? line.totalWeight / line.totalRolls : 20;
+      next.weight = Math.round((next.rolls ?? 0) * avg * 10) / 10;
+    }
+    setAllocations((prev) => prev.map((a) => (a === existing ? next : a)));
+  }
+
+  function linkedIds(): string[] {
+    return Object.keys(linked).filter((k) => linked[k]);
+  }
+
+  function allocatedTotals(incomingId: string) {
+    return allocations
+      .filter((a) => a.incomingChallanId === incomingId)
+      .reduce((acc, a) => ({ rolls: acc.rolls + a.rolls, weight: acc.weight + a.weight }), { rolls: 0, weight: 0 });
   }
 
   function validate(): string[] {
@@ -201,6 +266,20 @@ export function ChallanFormPage() {
       else if (header.dispatchDate < header.challanDate) issues.push("Dispatch date cannot be before the challan date.");
       if (!header.transporter?.trim()) issues.push("Transporter is required.");
       if (lineItems.some((li) => !isLineItemRowValid(li))) issues.push("Every line must have rolls, weight and rate filled in.");
+
+      for (const a of allocations) {
+        const d = details[a.incomingChallanId];
+        const line = d?.lines.find((l) => l.idx === a.incomingLineIdx);
+        if (!d || !line) continue;
+        if (a.rolls > line.remainingRolls + 1e-9) {
+          issues.push(`Incoming ${d.challanNo}: only ${line.remainingRolls} rolls remaining (${a.rolls} requested).`);
+        }
+        if (!weightOverride && a.weight > line.remainingWeight + 1e-9) {
+          issues.push(
+            `Incoming ${d.challanNo}: ${a.weight} kg exceeds the ${line.remainingWeight} kg remaining — tick "Allow weight override" to proceed.`
+          );
+        }
+      }
     }
     return issues;
   }
@@ -214,8 +293,13 @@ export function ChallanFormPage() {
     const payload = {
       status: mode,
       documentType,
-      header: { ...header, linkedIncomingChallanIds: Object.keys(linked).filter((k) => linked[k]) },
+      header: {
+        ...header,
+        linkedIncomingChallanIds: linkedIds(),
+        dispatchAllocations: allocations,
+      },
       lineItems,
+      allowWeightOverride: !!weightOverride,
     };
     try {
       const record = isEdit && id
@@ -333,10 +417,150 @@ export function ChallanFormPage() {
                       <p className="truncate font-medium">{c.header.challanNo ?? c.id.slice(0, 8)}</p>
                       <p className="truncate text-xs text-muted-foreground">{c.header.billing.name}</p>
                       <p className="text-xs text-muted-foreground">
-                        Incoming date: <span className="tabular-nums">{formatDate(c.header.challanDate)}</span> ·{" "}
-                        {formatNumber(c.lineItems.reduce((s, li) => s + (li.weight ?? 0) + (li.ribWeight ?? 0), 0))} kg
+                        {formatDate(c.header.challanDate)} · Remaining:{" "}
+                        <span className="tabular-nums">
+                          {formatNumber(c.pendingWeight ?? c.lineItems.reduce((s, li) => s + (li.weight ?? 0) + (li.ribWeight ?? 0), 0))} kg
+                        </span>
                       </p>
                     </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
+      {documentType === "outgoing" && linkedIds().length > 0 && (
+        <section className="space-y-4 rounded-xl border bg-card p-5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-semibold">Allocate Rolls from Incoming</h2>
+              <p className="text-xs text-muted-foreground">
+                Tell the system how many rolls / how much weight is being dispatched from each incoming
+                challan. Rolls already dispatched by other outgoings are excluded automatically.
+              </p>
+            </div>
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <Checkbox checked={weightOverride} onCheckedChange={(v) => setWeightOverride(v === true)} />
+              Allow weight beyond available
+            </label>
+          </div>
+
+          {materialLoading ? (
+            <Spinner className="mx-auto my-6" size={22} />
+          ) : (
+            <div className="space-y-4">
+              {linkedIds().map((incomingId) => {
+                const d = details[incomingId];
+                if (!d) return null;
+                const allocated = allocatedTotals(incomingId);
+                const lineTotal = d.lines.reduce((s, l) => s + l.totalWeight, 0);
+                return (
+                  <div key={incomingId} className="space-y-3 rounded-lg border bg-muted/30 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">{d.challanNo}</p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {d.party} · {formatDate(d.challanDate)}
+                        </p>
+                      </div>
+                      <p className="text-xs tabular-nums text-muted-foreground">
+                        Dispatching <strong className="text-foreground">{formatNumber(allocated.rolls)} rolls · {formatNumber(allocated.weight)} kg</strong> of {formatNumber(lineTotal)} kg
+                      </p>
+                    </div>
+
+                    {d.lines.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">This challan has no line items.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {d.lines.map((line) => {
+                          const isEmpty = line.totalRolls <= 0 && line.totalWeight <= 0;
+                          if (isEmpty) return null;
+                          const alloc = allocationFor(incomingId, line.idx);
+                          const rollsOver = (alloc?.rolls ?? 0) > line.remainingRolls + 1e-9;
+                          const weightOver = (alloc?.weight ?? 0) > line.remainingWeight + 1e-9;
+                          const manualKey = `${incomingId}:${line.idx}`;
+                          const desc = [
+                            line.lotNo,
+                            line.colour && line.depth && line.depth !== "-" ? `${line.colour} · ${line.depth}` : line.colour,
+                            line.processName,
+                          ].filter(Boolean).join(" · ");
+                          return (
+                            <div key={manualKey} className="rounded-md border bg-card p-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <p className="text-sm">{desc || `Line ${line.idx + 1}`}</p>
+                                {line.remainingRolls <= 0 && line.totalRolls > 0 ? (
+                                  <p className="text-xs font-medium tabular-nums text-destructive">
+                                    All {formatNumber(line.totalRolls)} rolls dispatched
+                                  </p>
+                                ) : (
+                                  <p className="text-xs tabular-nums text-muted-foreground">
+                                    Remaining{" "}
+                                    <strong className="text-foreground">{formatNumber(line.remainingRolls)} rolls · {formatNumber(line.remainingWeight)} kg</strong>{" "}
+                                    of {formatNumber(line.totalRolls)} rolls · {formatNumber(line.totalWeight)} kg
+                                  </p>
+                                )}
+                              </div>
+                              <div className="mt-2 flex flex-wrap items-end gap-3">
+                                <fieldset className="space-y-1">
+                                  <Label className="text-[11px] font-medium text-muted-foreground">Rolls</Label>
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    className="h-9 w-24"
+                                    value={alloc?.rolls ?? ""}
+                                    placeholder="0"
+                                    onChange={(e) =>
+                                      setAllocation(incomingId, line.idx, {
+                                        rolls: e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)),
+                                      })
+                                    }
+                                  />
+                                </fieldset>
+                                <fieldset className="space-y-1">
+                                  <Label className="text-[11px] font-medium text-muted-foreground">Weight (kg)</Label>
+                                  <div className="flex items-center gap-1">
+                                    <Input
+                                      type="number"
+                                      min={0}
+                                      className="h-9 w-28"
+                                      value={alloc?.weight ?? ""}
+                                      placeholder="0"
+                                      onChange={(e) => {
+                                        setManualWeights((m) => ({ ...m, [manualKey]: true }));
+                                        setAllocation(incomingId, line.idx, {
+                                          weight: e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)),
+                                        });
+                                      }}
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => setManualWeights((m) => ({ ...m, [manualKey]: !m[manualKey] }))}
+                                      title={manualWeights[manualKey] ? "Manual weight — click for auto (per-roll average)" : "Auto weight (per-roll average)"}
+                                      className={cn(
+                                        "flex h-9 w-9 shrink-0 items-center justify-center rounded-md border text-[10px] font-semibold transition-colors",
+                                        manualWeights[manualKey]
+                                          ? "border-input bg-card text-muted-foreground"
+                                          : "border-primary/40 bg-primary/10 text-primary"
+                                      )}
+                                    >
+                                      ≈auto
+                                    </button>
+                                  </div>
+                                </fieldset>
+                                {(rollsOver || (weightOver && !weightOverride)) && (
+                                  <p className="text-xs text-destructive">
+                                    {rollsOver && `Only ${line.remainingRolls} rolls left for this line. `}
+                                    {weightOver && !weightOverride && `${line.remainingWeight} kg left.`}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 );
               })}

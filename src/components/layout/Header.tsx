@@ -1,9 +1,11 @@
 import { useNavigate } from "react-router-dom";
-import { Search, Menu, LogOut, Settings, User as UserIcon, Moon, Sun } from "lucide-react";
+import { useEffect } from "react";
+import { Search, Menu, LogOut, Settings, User as UserIcon, Moon, Sun, Cloud, CloudOff, RefreshCw } from "lucide-react";
 import { useUserStore } from "@/stores/user";
 import { useSidebarStore } from "@/stores/sidebar";
 import { useSearchStore } from "@/stores/search";
 import { useThemeStore } from "@/stores/theme";
+import { useCloudSyncStore } from "@/stores/cloud-sync";
 import { Avatar } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -21,8 +23,21 @@ export function Header() {
   const resolved = useThemeStore((s) => s.resolved);
   const toggleTheme = useThemeStore((s) => s.toggle);
   const navigate = useNavigate();
+  const cloud = useCloudSyncStore();
+
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    void useCloudSyncStore.getState().bind().then((fn) => {
+      dispose = fn;
+    });
+    return () => dispose?.();
+  }, []);
 
   if (!user) return null;
+
+  const pendingTotal =
+    (cloud.status?.pending?.challans ?? 0) +
+    Object.values(cloud.status?.pending?.masters ?? {}).reduce((a, b) => a + (b ?? 0), 0);
 
   return (
     <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-3 border-b bg-card/80 px-4 backdrop-blur">
@@ -44,6 +59,49 @@ export function Header() {
       </button>
 
       <div className="ml-auto flex items-center gap-1">
+        <button
+          onClick={() => {
+            if (!cloud.status?.configured) {
+              navigate("/sync");
+              return;
+            }
+            void useCloudSyncStore.getState().syncNow();
+          }}
+          className={`inline-flex h-9 max-w-56 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors hover:bg-accent ${
+            cloud.status?.configured
+              ? cloud.status.online
+                ? "border-emerald-600/40 text-emerald-700 dark:text-emerald-400"
+                : "border-amber-600/40 text-amber-700 dark:text-amber-400"
+              : "border-border text-muted-foreground"
+          }`}
+          title={
+            cloud.status?.configured
+              ? `Cloud sync · last ${cloud.status.lastSyncedAt || "never"}${pendingTotal ? ` · ${pendingTotal} pending` : ""}`
+              : "Cloud sync not configured — open Sync page to set it up"
+          }
+        >
+          {cloud.status?.configured ? (
+            cloud.status.syncing ? (
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+            ) : cloud.status.online ? (
+              <Cloud className="h-3.5 w-3.5" />
+            ) : (
+              <CloudOff className="h-3.5 w-3.5" />
+            )
+          ) : (
+            <CloudOff className="h-3.5 w-3.5" />
+          )}
+          {cloud.status?.configured && (
+            <span className="hidden min-w-0 truncate sm:block">
+              {cloud.status.syncing
+                ? "Syncing…"
+                : cloud.status.online
+                  ? `Online · ${cloud.status.lastSyncedAt?.slice(11, 16) ?? "—"}${pendingTotal ? ` · ${pendingTotal}↑` : ""}`
+                  : "Offline"}
+            </span>
+          )}
+        </button>
+
         <button
           onClick={toggleTheme}
           className="inline-flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"

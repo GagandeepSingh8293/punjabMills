@@ -4,6 +4,23 @@ Format per `FeedbackItems.md` §40. Append one entry per significant implementat
 
 ---
 
+## 2026-09-20 — Phase 2: Roll/Lot material tracking (dispatch allocations)
+- **Existing behavior:** outgoing challans could link incoming challans at the header level; `dispatchedWeight`/`pendingWeight` counted the entire outgoing weight regardless of how much actually moved.
+- **Problem/Decision:** spec §14 requires partial outgoing movement with visible remaining rolls/weight, already-dispatched protection, and incoming→outgoing traceability per line. Store per-line allocations inside the outgoing challan's snapshot (`header.dispatchAllocations`) so incoming `data_json` stays immutable.
+- **Implementation:**
+  - Types: `DispatchAllocation`, `LineAvailability`, `LinkedIncomingDetails` (existing `Party` export accidentally dropped then restored).
+  - Rust `util.rs`: `dispatched_by_line`, `incoming_line_availability`, `validate_allocations`, `line_total_rolls/weight`; `dispatched_weight` now prefers per-line allocations (fallback to legacy full-weight).
+  - Rust `commands.rs`: new `get_linked_incoming_details`; `create_challan`/`update_challan` now validate allocations up front (fail before insert), excluding the challan being edited.
+  - UI (`ChallanFormPage`): "Allocate Rolls from Incoming" section per linked challan — per-line remaining/available display, rolls + weight dispatch inputs (auto weight ≈ per-roll average), "Allow weight beyond available" override, roll-exceed limits, save-time validation; search cards now show remaining kg; unlinking an incoming drops its allocations.
+- **DB changes:** none (allocations live in outgoing `data_json`).
+- **API changes:** `get_linked_incoming_details` command registered in `lib.rs`; `api.challans.linkedIncomingDetails`.
+- **Tests:** `cargo test` — 2 new unit tests (`partial_dispatch_remaining_and_validation`, `dispatched_weight_prefers_allocations`). Pass.
+- **Verification:** `npx tsc --noEmit` clean, `cargo check` clean, `npm run build` clean, app restarted, `/health` OK. New command present in running binary.
+- **Known limitations:** allocations are count/weight entry (not per-roll pick); weight override is a single global switch.
+- **Next step:** surface remaining rolls on incoming list page; commit/push on request.
+
+---
+
 ## 2026-09-20 — Codebase audit (Phase 0)
 - **Existing behavior:** none audited before.
 - **Problem:** spec requires understanding before changing any code.

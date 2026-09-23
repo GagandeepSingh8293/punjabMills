@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ChallanListResponse, ChallanRecord } from "@/types/challan";
+import type { ChallanListResponse, ChallanRecord, LinkedIncomingDetails } from "@/types/challan";
 import type { Invoice, InvoiceListResponse } from "@/types/billing";
 import type { User } from "@/types/user";
 import type { TenantSettings } from "@/types/tenant";
@@ -8,7 +8,7 @@ import type { DashboardStatsResponse } from "@/types/dashboard";
 import type { ActivityFeedResponse } from "@/types/activity";
 import type { GlobalSearchResponse } from "@/types/search";
 import type { ChallanFilterOptions } from "@/types/api";
-import type { SyncStatusPayload, GeminiConfigPayload, GstConfigPayload, ScanPhotoPayload } from "@/types/socket-events";
+import type { SyncStatusPayload, GeminiConfigPayload, GstConfigPayload, ScanPhotoPayload, CloudSyncStatus } from "@/types/socket-events";
 
 export interface GstLookupResult {
   found: boolean;
@@ -83,6 +83,10 @@ export const api = {
       invoke<ChallanRecord>("create_challan", { payload, sessionId }).catch((e) => Promise.reject(err(e))),
     update: (id: string, payload: Record<string, unknown>, sessionId?: string): Promise<ChallanRecord> =>
       invoke<ChallanRecord>("update_challan", { id, payload, sessionId }).catch((e) => Promise.reject(err(e))),
+    linkedIncomingDetails: (ids: string[], excludeOutgoingId?: string): Promise<LinkedIncomingDetails[]> =>
+      invoke<LinkedIncomingDetails[]>("get_linked_incoming_details", { ids, excludeOutgoingId }).catch((e) =>
+        Promise.reject(err(e))
+      ),
     filterOptions: (documentType?: string): Promise<ChallanFilterOptions> =>
       invoke<ChallanFilterOptions>("get_challan_filter_options", { documentType }).catch((e) =>
         Promise.reject(err(e))
@@ -139,5 +143,18 @@ export const api = {
       invoke<GeminiConfigPayload>("get_gemini_config").catch((e) => Promise.reject(err(e))),
     setApiKey: (key: string): Promise<void> =>
       invoke<void>("set_gemini_api_key", { key }).catch((e) => Promise.reject(err(e))),
+  },
+
+  cloud: {
+    status: (): Promise<CloudSyncStatus> =>
+      invoke<CloudSyncStatus>("cloud_sync_status").catch((e) => Promise.reject(err(e))),
+    syncNow: (): Promise<{ ok: boolean; mode?: string; status?: CloudSyncStatus; error?: string }> =>
+      invoke<{ ok: boolean; mode?: string; status?: CloudSyncStatus; error?: string }>("cloud_sync_now").catch((e) =>
+        Promise.reject(err(e))
+      ),
+    configure: (remoteUrl: string, token: string): Promise<{ configured: boolean; online: boolean }> =>
+      invoke<{ configured: boolean; online: boolean }>("cloud_sync_configure", { remoteUrl, token }).catch((e) =>
+        Promise.reject(err(e))
+      ),
   },
 };

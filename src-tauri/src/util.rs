@@ -40,11 +40,14 @@ pub fn upsert_challan(conn: &Connection, record: &Value) -> rusqlite::Result<()>
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    // A write from the desktop app marks the row as pending cloud sync.
+    let updated_at = crate::syncengine::now_iso();
+    let data_json = record.to_string();
     conn.execute(
-        "INSERT INTO challans (id, document_type, status, challan_date, data_json, created_at)
-         VALUES (?1,?2,?3,?4,?5,?6)
-         ON CONFLICT(id) DO UPDATE SET document_type=?2, status=?3, challan_date=?4, data_json=?5",
-        params![id, document_type, status, challan_date, record.to_string(), created_at],
+        "INSERT INTO challans (id, document_type, status, challan_date, data_json, created_at, updated_at, pending_sync)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,1)
+         ON CONFLICT(id) DO UPDATE SET document_type=?2, status=?3, challan_date=?4, data_json=?5, updated_at=?7, pending_sync=1",
+        params![id, document_type, status, challan_date, data_json, created_at, updated_at],
     )?;
     Ok(())
 }
@@ -119,6 +122,8 @@ pub fn challan_total_weight(challan: &Value) -> f64 {
 }
 
 /// Weight dispatched against an Incoming Challan by linked Outgoing Challans (mirrors `challanDispatchedWeight`).
+/// When an outgoing challan records per-line `dispatchAllocations`, only the allocated weight counts;
+/// otherwise the full outgoing line weight is used (legacy partial-link behaviour).
 pub fn dispatched_weight(conn: &Connection, incoming_id: &str) -> f64 {
     all_challans(conn)
         .iter()
@@ -130,7 +135,20 @@ pub fn dispatched_weight(conn: &Connection, incoming_id: &str) -> f64 {
                     .map(|ids| ids.iter().any(|id| id.as_str() == Some(incoming_id)))
                     .unwrap_or(false)
         })
-        .map(sum_line_item_weights)
+        .map(|c| {
+            let allocations = c
+                .get("header")
+                .and_then(|h| h.get("dispatchAllocations"))
+                .and_then(|v| v.as_array());
+            match allocations {
+                Some(list) if !list.is_empty() => list
+                    .iter()
+                    .filter(|a| a.get("incomingChallanId").and_then(|v| v.as_str()) == Some(incoming_id))
+                    .map(|a| a.get("weight").and_then(|v| v.as_f64()).unwrap_or(0.0))
+                    .sum::<f64>(),
+                _ => sum_line_item_weights(c),
+            }
+        })
         .sum()
 }
 
@@ -148,6 +166,160 @@ fn sum_line_item_weights(challan: &Value) -> f64 {
                 .sum()
         })
         .unwrap_or(0.0)
+}
+
+fn line_num(item: &Value, key: &str) -> f64 {
+    item.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0)
+}
+
+/// Total rolls on a line item (main + rib).
+pub fn line_total_rolls(item: &Value) -> f64 {
+    line_num(item, "roll") + line_num(item, "ribRoll")
+}
+
+/// Total weight on a line item (main + rib).
+pub fn line_total_weight(item: &Value) -> f64 {
+    line_num(item, "weight") + line_num(item, "ribWeight")
+}
+
+/// Per-line dispatch totals (line id, index, rolls, weight) made by all outgoing challans
+/// against an incoming challan, optionally excluding one outgoing challan (the one being edited).
+pub fn dispatched_by_line(conn: &Connection, incoming_id: &str, exclude_outgoing_id: Option<&str>) -> Vec<(String, usize, f64, f64)> {
+    let mut out: Vec<(String, usize, f64, f64)> = Vec::new();
+    for c in all_challans(conn) {
+        if c.get("documentType").and_then(|v| v.as_str()) != Some("outgoing") {
+            continue;
+        }
+        let id = c.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        if exclude_outgoing_id == Some(id) {
+            continue;
+        }
+        if let Some(allocations) = c
+            .get("header")
+            .and_then(|h| h.get("dispatchAllocations"))
+            .and_then(|v| v.as_array())
+        {
+            for a in allocations {
+                if a.get("incomingChallanId").and_then(|v| v.as_str()) != Some(incoming_id) {
+                    continue;
+                }
+                let line_id = a.get("incomingLineId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let idx = a.get("incomingLineIdx").and_then(|v| v.as_i64()).unwrap_or(0) as usize;
+                let rolls = a.get("rolls").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let weight = a.get("weight").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                out.push((line_id, idx, rolls, weight));
+            }
+        }
+    }
+    out
+}
+
+fn line_key(item: &Value, idx: usize) -> String {
+    match item.get("id").and_then(|v| v.as_str()) {
+        Some(id) if !id.is_empty() => format!("id:{id}"),
+        _ => format!("idx:{idx}"),
+    }
+}
+
+fn alloc_key_for(line_id: &str, idx: usize) -> String {
+    if line_id.is_empty() {
+        format!("idx:{idx}")
+    } else {
+        format!("id:{line_id}")
+    }
+}
+
+/// Per-line availability of an incoming challan: totals minus other outgoings' dispatches.
+pub fn incoming_line_availability(incoming: &Value, dispatched: &[(String, usize, f64, f64)]) -> Vec<Value> {
+    incoming
+        .get("lineItems")
+        .and_then(|v| v.as_array())
+        .map(|lines| {
+            lines
+                .iter()
+                .enumerate()
+                .map(|(idx, item)| {
+                    let key = line_key(item, idx);
+                    let (d_rolls, d_weight): (f64, f64) = dispatched
+                        .iter()
+                        .filter(|(line_id, i, _, _)| alloc_key_for(line_id, *i) == key)
+                        .fold((0.0, 0.0), |(r, w), (_, _, a, b)| (r + a, w + b));
+                    let total_rolls = line_total_rolls(item);
+                    let total_weight = line_total_weight(item);
+                    json!({
+                        "id": item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        "idx": idx,
+                        "lotNo": item.get("lotNo").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        "colour": item.get("colour").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        "depth": item.get("depth").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        "processName": item.get("processName").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        "totalRolls": total_rolls,
+                        "totalWeight": total_weight,
+                        "dispatchRolls": round2(d_rolls),
+                        "dispatchWeight": round2(d_weight),
+                        "remainingRolls": round2((total_rolls - d_rolls).max(0.0)),
+                        "remainingWeight": round2((total_weight - d_weight).max(0.0)),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Validate an outgoing challan's dispatch allocations: rolls must never exceed the rolls
+/// remaining on the incoming line; weight must not exceed remaining weight unless overridden.
+pub fn validate_allocations(conn: &Connection, record: &Value, exclude_outgoing_id: Option<&str>) -> Vec<String> {
+    let Some(allocations) = record
+        .get("header")
+        .and_then(|h| h.get("dispatchAllocations"))
+        .and_then(|v| v.as_array())
+    else {
+        return Vec::new();
+    };
+    let allow_weight_override = record.get("allowWeightOverride").and_then(|v| v.as_bool()).unwrap_or(false);
+    let mut issues: Vec<String> = Vec::new();
+    for a in allocations {
+        let Some(incoming_id) = a.get("incomingChallanId").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(incoming) = challan_by_id(conn, incoming_id) else {
+            continue;
+        };
+        let no = incoming
+            .get("header")
+            .and_then(|h| h.get("challanNo"))
+            .and_then(|v| v.as_str())
+            .unwrap_or(incoming_id);
+        let line_id = a.get("incomingLineId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let idx = a.get("incomingLineIdx").and_then(|v| v.as_i64()).unwrap_or(0) as usize;
+        let wants_rolls = a.get("rolls").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let wants_weight = a.get("weight").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+        let dispatched = dispatched_by_line(conn, incoming_id, exclude_outgoing_id);
+        let lines = incoming_line_availability(&incoming, &dispatched);
+        let line = lines.iter().find(|l| {
+            l["idx"].as_i64().unwrap_or(0) as usize == idx || (!line_id.is_empty() && l["id"].as_str() == Some(line_id.as_str()))
+        });
+        let Some(line) = line else {
+            continue;
+        };
+
+        let rem_rolls = line["remainingRolls"].as_f64().unwrap_or(0.0);
+        let rem_weight = line["remainingWeight"].as_f64().unwrap_or(0.0);
+        if wants_rolls > rem_rolls + 1e-9 {
+            issues.push(format!(
+                "Incoming {} can spare {:.0} rolls (requested {:.0}).",
+                no, rem_rolls, wants_rolls
+            ));
+        }
+        if !allow_weight_override && wants_weight > rem_weight + 1e-9 {
+            issues.push(format!(
+                "Incoming {} can spare {:.0} kg (requested {:.0} kg). Tick 'Allow weight override' to proceed.",
+                no, rem_weight, wants_weight
+            ));
+        }
+    }
+    issues
 }
 
 /// Distinct values helper mirroring the filter-options route.
@@ -386,4 +558,111 @@ pub fn job_work_settings(conn: &Connection) -> Value {
         },
     )
     .unwrap_or(json!({ "sacCode": "9988", "gstRate": 5 }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE challans (id TEXT PRIMARY KEY, document_type TEXT, status TEXT,
+             challan_date TEXT, data_json TEXT, created_at TEXT);",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn line(id: &str, roll: f64, weight: f64) -> Value {
+        json!({
+            "id": id, "lotNo": format!("LOT-{id}"), "colour": "Navy", "depth": "Dark",
+            "roll": roll, "weight": weight, "ribRoll": 0, "ribWeight": 0, "rate": 10.0
+        })
+    }
+
+    fn base_challan(id: &str, document_type: &str, challan_no: &str) -> Value {
+        let party = json!({ "name": "X", "address": "addr", "state": "Punjab", "stateCode": "03" });
+        json!({
+            "id": id, "status": "saved", "documentType": document_type,
+            "createdAt": "2026-01-01T00:00:00Z",
+            "header": {
+                "challanNo": challan_no, "challanDate": "2026-01-10", "vehicleNo": "PB-1",
+                "billing": party.clone(), "shipping": party,
+            },
+            "lineItems": [],
+        })
+    }
+
+    fn incoming(id: &str, lines: Value) -> Value {
+        let mut c = base_challan(id, "incoming", &format!("IN-{id}"));
+        c["lineItems"] = lines;
+        c
+    }
+
+    fn outgoing(id: &str, incoming_id: &str, allocations: Value) -> Value {
+        let mut c = base_challan(id, "outgoing", &format!("OUT-{id}"));
+        c["header"]["dispatchDate"] = json!("2026-01-12");
+        c["header"]["transporter"] = json!("T");
+        c["header"]["linkedIncomingChallanIds"] = json!([incoming_id]);
+        c["header"]["dispatchAllocations"] = allocations;
+        c
+    }
+
+    fn alloc(incoming_id: &str, line_id: &str, idx: usize, rolls: f64, weight: f64) -> Value {
+        json!({
+            "incomingChallanId": incoming_id, "incomingLineId": line_id,
+            "incomingLineIdx": idx, "rolls": rolls, "weight": weight
+        })
+    }
+
+    #[test]
+    fn partial_dispatch_remaining_and_validation() {
+        let conn = test_conn();
+        upsert_challan(&conn, &incoming("inc1", json!([line("l1", 9.0, 900.0), line("l2", 5.0, 500.0)]))).unwrap();
+
+        // First outgoing takes 5 of the 9 rolls on line 0.
+        upsert_challan(&conn, &outgoing("out1", "inc1", json!([alloc("inc1", "l1", 0, 5.0, 500.0)]))).unwrap();
+
+        // Availability for a second outgoing (excluding itself): 4 rolls / 400 kg remain on line 0.
+        let avail = incoming_line_availability(&challan_by_id(&conn, "inc1").unwrap(), &dispatched_by_line(&conn, "inc1", Some("out2")));
+        assert_eq!(avail[0]["remainingRolls"].as_f64().unwrap(), 4.0);
+        assert_eq!(avail[0]["remainingWeight"].as_f64().unwrap(), 400.0);
+        assert_eq!(avail[1]["remainingRolls"].as_f64().unwrap(), 5.0);
+
+        // Second outgoing taking the remaining 4 rolls is valid.
+        let out2 = outgoing("out2", "inc1", json!([alloc("inc1", "l1", 0, 4.0, 400.0)]));
+        assert!(validate_allocations(&conn, &out2, None).is_empty());
+
+        // Third outgoing over-allocates line 0 (all 9 already gone) -> rolls error.
+        upsert_challan(&conn, &out2).unwrap();
+        let out3 = outgoing("out3", "inc1", json!([alloc("inc1", "l1", 0, 5.0, 500.0)]));
+        let issues = validate_allocations(&conn, &out3, None);
+        assert!(issues.iter().any(|i| i.contains("rolls")));
+
+        // Weight beyond remaining fails without override...
+        let out4 = outgoing("out4", "inc1", json!([alloc("inc1", "l2", 1, 5.0, 999.0)]));
+        assert!(validate_allocations(&conn, &out4, None).iter().any(|i| i.contains("kg")));
+        // ...but passes with the explicit override.
+        let mut out4o = out4;
+        out4o["allowWeightOverride"] = json!(true);
+        assert!(validate_allocations(&conn, &out4o, None).is_empty());
+
+        // Editing out1: its own allocations must not count against itself (out2 holds 4 → 5 remain).
+        let issues = validate_allocations(&conn, &outgoing("out1", "inc1", json!([alloc("inc1", "l1", 0, 5.0, 500.0)])), Some("out1"));
+        assert!(issues.is_empty());
+        // But editing out1 up to 9 rolls is impossible — out2 already owns 4 of the line.
+        let over = validate_allocations(&conn, &outgoing("out1", "inc1", json!([alloc("inc1", "l1", 0, 9.0, 900.0)])), Some("out1"));
+        assert!(over.iter().any(|i| i.contains("rolls")));
+    }
+
+    #[test]
+    fn dispatched_weight_prefers_allocations() {
+        let conn = test_conn();
+        upsert_challan(&conn, &incoming("inc1", json!([line("l1", 9.0, 900.0)]))).unwrap();
+        upsert_challan(&conn, &outgoing("out1", "inc1", json!([alloc("inc1", "l1", 0, 5.0, 500.0)]))).unwrap();
+        // Partial dispatch: only the allocated 500 kg counts (not the full outgoing weight).
+        assert_eq!(dispatched_weight(&conn, "inc1"), 500.0);
+    }
 }

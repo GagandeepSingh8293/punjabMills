@@ -2,6 +2,7 @@ mod commands;
 mod db;
 mod ocr;
 mod sync;
+mod syncengine;
 mod util;
 
 use std::sync::Mutex;
@@ -20,6 +21,7 @@ pub fn run() {
             db::init(&conn)?;
             app.manage(commands::DbState(Mutex::new(conn)));
             sync::start(app.handle().clone(), db_path.clone());
+            syncengine::start_auto(app.handle().clone(), db_path.clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -43,6 +45,7 @@ pub fn run() {
             commands::create_challan,
             commands::update_challan,
             commands::get_challan_filter_options,
+            commands::get_linked_incoming_details,
             commands::list_invoices,
             commands::get_invoice,
             commands::generate_invoices,
@@ -59,6 +62,9 @@ pub fn run() {
             commands::set_gst_api_key,
             commands::get_gst_config,
             sync::get_sync_status,
+            syncengine::cloud_sync_configure,
+            syncengine::cloud_sync_now,
+            syncengine::cloud_sync_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

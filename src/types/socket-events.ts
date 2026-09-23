@@ -73,3 +73,33 @@ export type SyncStatusPayload = {
 };
 
 export type SyncedChallanPayload = import("./challan").ChallanRecord;
+
+/** Pending-change counts per synced table (mirrors Rust `pending_counts`). */
+export type PendingCounts = {
+  challans?: number;
+  masters?: {
+    customers?: number;
+    colours?: number;
+    depths?: number;
+    processes?: number;
+    hsnCodes?: number;
+  };
+};
+
+/** Result of `cloud_sync_status` / payload of `cloud-sync:status` events. */
+export type CloudSyncStatus = {
+  configured: boolean;
+  remoteUrl?: string;
+  online: boolean;
+  syncing: boolean;
+  lastSyncedAt?: string;
+  lastMode?: "manual" | "auto" | "";
+  lastOnlineAt?: string;
+  lastError?: string;
+  pending?: PendingCounts;
+  deviceId?: string;
+};
+
+export const CLOUD_SYNC_EVENTS = {
+  STATUS: "cloud-sync:status",
+} as const;

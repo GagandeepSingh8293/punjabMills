@@ -482,6 +482,8 @@ pub fn create_master(state: State<'_, DbState>, kind: String, payload: Value) ->
     conn.execute(&sql, rusqlite::params_from_iter(values))
         .map_err(|e| e.to_string())?;
 
+    mark_master_dirty(&conn, table, &id).map_err(|e| e.to_string())?;
+
     conn.query_row(&format!("SELECT * FROM {table} WHERE id=?1"), params![id], |row| {
         master_to_json(&kind, row)
     })
@@ -505,10 +507,25 @@ pub fn update_master(state: State<'_, DbState>, kind: String, id: String, payloa
     conn.execute(&sql, rusqlite::params_from_iter(values))
         .map_err(|e| e.to_string())?;
 
+    mark_master_dirty(&conn, table, &id).map_err(|e| e.to_string())?;
+
     conn.query_row(&format!("SELECT * FROM {table} WHERE id=?1"), params![id], |row| {
         master_to_json(&kind, row)
     })
     .map_err(|e| e.to_string())
+}
+
+/// Flag a synced master row for background cloud sync. Only tables that carry
+/// `updated_at`/`pending_sync` (the cloud-synced masters) are touched.
+fn mark_master_dirty(conn: &rusqlite::Connection, table: &str, id: &str) -> rusqlite::Result<()> {
+    if !matches!(table, "customers" | "hsn_codes" | "colours" | "processors" | "depths") {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE {table} SET updated_at=?1, pending_sync=1 WHERE id=?2",
+        rusqlite::params![crate::syncengine::now_iso(), id],
+    )
+    .map(|_| ())
 }
 
 #[tauri::command]
@@ -671,6 +688,52 @@ pub fn get_challan(state: State<'_, DbState>, id: String) -> Result<Value, Strin
         map.insert("photos".to_string(), json!(collect_photos(&conn, &id)));
     }
     Ok(enriched)
+}
+
+/// Per-line roll/weight availability for the linked incoming challans of an outgoing challan.
+/// `excludeOutgoingId` is the outgoing being edited, so its own allocations don't count as dispatched.
+#[tauri::command]
+pub fn get_linked_incoming_details(
+    state: State<'_, DbState>,
+    ids: Vec<String>,
+    exclude_outgoing_id: Option<String>,
+) -> Result<Vec<Value>, String> {
+    let conn = conn(&state);
+    let dispatched: std::collections::HashMap<String, Vec<(String, usize, f64, f64)>> = ids
+        .iter()
+        .map(|id| (id.clone(), util::dispatched_by_line(&conn, id, exclude_outgoing_id.as_deref())))
+        .collect();
+    let mut out: Vec<Value> = Vec::new();
+    for id in &ids {
+        let Some(incoming) = util::challan_by_id(&conn, id) else {
+            continue;
+        };
+        if acc(&incoming, "documentType") != Some("incoming") {
+            continue;
+        }
+        let no = incoming
+            .get("header")
+            .and_then(|h| h.get("challanNo"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let date = incoming
+            .get("header")
+            .and_then(|h| h.get("challanDate"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let party = incoming
+            .get("header")
+            .and_then(|h| h.get("billing"))
+            .and_then(|b| b.get("name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let lines = util::incoming_line_availability(&incoming, dispatched.get(id).map(Vec::as_slice).unwrap_or(&[]));
+        out.push(json!({ "id": id, "challanNo": no, "challanDate": date, "party": party, "lines": lines }));
+    }
+    Ok(out)
 }
 
 /// Attach the saved scan-photo references for an incoming challan (id, mime, size, created).
@@ -859,6 +922,14 @@ pub fn create_challan(
         }
     }
 
+    let issues = util::validate_allocations(&conn, &record, None);
+    if !issues.is_empty() {
+        return Err(issues.join(" "));
+    }
+    if let Value::Object(map) = &mut record {
+        map.remove("allowWeightOverride");
+    }
+
     upsert_challan(&conn, &record).map_err(|e| e.to_string())?;
     record_scan_corrections(&conn, session_id.as_deref(), &id, &record);
     link_scan_photos(&conn, session_id.as_deref(), &id);
@@ -882,6 +953,14 @@ pub fn update_challan(
         if let Some(created) = existing_created {
             map.insert("createdAt".to_string(), created);
         }
+    }
+
+    let issues = util::validate_allocations(&conn, &record, Some(&id));
+    if !issues.is_empty() {
+        return Err(issues.join(" "));
+    }
+    if let Value::Object(map) = &mut record {
+        map.remove("allowWeightOverride");
     }
 
     upsert_challan(&conn, &record).map_err(|e| e.to_string())?;

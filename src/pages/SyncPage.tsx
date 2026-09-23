@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
-import { Check, Copy, Link2, Smartphone, ArrowRight, RefreshCw, KeyRound, Sparkles, Save, Trash2 } from "lucide-react";
+import { Check, Copy, Link2, Smartphone, ArrowRight, RefreshCw, KeyRound, Sparkles, Save, Trash2, Cloud, CloudOff, Unplug, Wifi, WifiOff, Loader2 } from "lucide-react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { PageHeader } from "@/components/ui/page-header";
 import { Button } from "@/components/ui/button";
@@ -12,7 +12,15 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { api } from "@/lib/api";
 import { SYNC_EVENTS, type GeminiConfigPayload, type SyncStatusPayload, type SyncedChallanPayload } from "@/types/socket-events";
+import { useCloudSyncStore } from "@/stores/cloud-sync";
 import type { ChallanRecord } from "@/types/challan";
+
+function formatWhen(iso?: string): string {
+  if (!iso) return "never";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+}
 
 export function SyncPage() {
   const [status, setStatus] = useState<SyncStatusPayload | null>(null);
@@ -21,6 +29,41 @@ export function SyncPage() {
   const [config, setConfig] = useState<GeminiConfigPayload | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [keySaved, setKeySaved] = useState(false);
+
+  const cloud = useCloudSyncStore();
+  const [remoteUrl, setRemoteUrl] = useState("http://127.0.0.1:8000");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const [justSynced, setJustSynced] = useState(false);
+
+  const pendingTotal =
+    (cloud.status?.pending?.challans ?? 0) +
+    Object.values(cloud.status?.pending?.masters ?? {}).reduce((a, b) => a + (b ?? 0), 0);
+
+  const connect = async () => {
+    setConnecting(true);
+    setConnectError(null);
+    try {
+      const login = await fetch(`${remoteUrl.replace(/\/$/, "")}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: loginEmail, password: loginPassword }),
+      });
+      if (!login.ok) {
+        const body = await login.json().catch(() => ({}));
+        throw new Error((body as { detail?: string }).detail ?? `Login failed (${login.status})`);
+      }
+      const data = (await login.json()) as { access_token: string };
+      await api.cloud.configure(remoteUrl, data.access_token);
+      await cloud.refresh();
+    } catch (e) {
+      setConnectError(String(e));
+    } finally {
+      setConnecting(false);
+    }
+  };
 
   useEffect(() => {
     let unlisteners: UnlistenFn[] = [];
@@ -60,6 +103,8 @@ export function SyncPage() {
       }
     })();
 
+    void useCloudSyncStore.getState().refresh();
+
     return () => {
       mounted = false;
       for (const un of unlisteners) void un();
@@ -97,6 +142,133 @@ export function SyncPage() {
           </Button>
         }
       />
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Cloud className="h-4 w-4" />
+            Cloud backup & sync
+            <Badge variant={cloud.status?.configured ? (cloud.status.online ? "success" : "warning") : "secondary"}>
+              {cloud.status?.configured ? (cloud.status.online ? "Online" : "Offline") : "Not configured"}
+            </Badge>
+            {cloud.status?.syncing && (
+              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Syncing…
+              </span>
+            )}
+          </CardTitle>
+          <CardDescription>
+            Keeps a copy of challans, customers and masters on the server — offline-first, so you can work
+            anywhere and it catches up automatically every 30 seconds when back online.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {cloud.status?.configured ? (
+            <>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="rounded-lg border bg-muted/40 p-3">
+                  <p className="text-xs text-muted-foreground">Last sync</p>
+                  <p className="mt-1 flex items-center gap-1.5 text-sm font-medium">
+                    {cloud.status.online ? <Wifi className="h-4 w-4 text-emerald-600 dark:text-emerald-400" /> : <WifiOff className="h-4 w-4 text-muted-foreground" />}
+                    {formatWhen(cloud.status.lastSyncedAt)}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {cloud.status.lastMode === "auto" ? "automatic" : "manual"}
+                    {cloud.status.lastError ? ` · error: ${cloud.status.lastError}` : ""}
+                  </p>
+                </div>
+                <div className="rounded-lg border bg-muted/40 p-3">
+                  <p className="text-xs text-muted-foreground">Pending changes</p>
+                  <p className="mt-1 text-sm font-medium">
+                    {pendingTotal === 0 ? (
+                      <span className="text-emerald-600 dark:text-emerald-400">All synced</span>
+                    ) : (
+                      <span className="text-amber-600 dark:text-amber-400">{pendingTotal} to upload</span>
+                    )}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {(cloud.status?.pending?.challans ?? 0) > 0 && (
+                      <span>{cloud.status?.pending?.challans} challans</span>
+                    )}
+                    {Object.entries(cloud.status?.pending?.masters ?? {})
+                      .filter(([, n]) => (n ?? 0) > 0)
+                      .map(([k, n]) => (
+                        <span key={k} className="capitalize">
+                          {k === "hsnCodes" ? "HSN codes" : k} {n}
+                          ·{" "}
+                        </span>
+                      ))}
+                  </p>
+                </div>
+                <div className="rounded-lg border bg-muted/40 p-3">
+                  <p className="text-xs text-muted-foreground">Device</p>
+                  <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{cloud.status.deviceId ?? "—"}</p>
+                  <p className="truncate text-xs text-muted-foreground">{cloud.status.remoteUrl}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="default"
+                  disabled={cloud.status.syncing}
+                  onClick={() => {
+                    void cloud.syncNow().then(() => {
+                      setJustSynced(true);
+                      setTimeout(() => setJustSynced(false), 2000);
+                    });
+                  }}
+                >
+                  {cloud.status.syncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  {justSynced ? "Synced" : "Sync now"}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={async () => {
+                    await api.cloud.configure("", "");
+                    await cloud.refresh();
+                  }}
+                >
+                  <Unplug className="h-4 w-4" />
+                  Disconnect
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="space-y-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                  <div className="flex-1">
+                    <Label htmlFor="cloud-url">Server URL</Label>
+                    <Input
+                      id="cloud-url"
+                      value={remoteUrl}
+                      onChange={(e) => setRemoteUrl(e.target.value)}
+                      placeholder="http://127.0.0.1:8000"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <Label htmlFor="cloud-email">Account email</Label>
+                    <Input id="cloud-email" value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} autoComplete="email" />
+                  </div>
+                  <div className="flex-1">
+                    <Label htmlFor="cloud-pass">Password</Label>
+                    <Input id="cloud-pass" type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} autoComplete="current-password" />
+                  </div>
+                </div>
+                <Button onClick={() => void connect()} disabled={connecting || !remoteUrl.trim() || !loginEmail.trim() || !loginPassword.trim()}>
+                  {connecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Cloud className="h-4 w-4" />}
+                  {connecting ? "Connecting…" : "Connect"}
+                </Button>
+                {connectError && <p className="text-sm text-destructive">{connectError}</p>}
+                <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                  <CloudOff className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  Not configured yet — everything stays on this device until you connect a server.
+                </p>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
         <Card>

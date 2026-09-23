@@ -166,8 +166,73 @@ const CUSTOMER_JOBS: &[CustomerJob] = &[
 
 pub fn init(conn: &Connection) -> rusqlite::Result<()> {
     create_schema(conn)?;
+    migrate_sync_columns(conn)?;
+    ensure_sync_state(conn);
     seed(conn)?;
     migrate_additional_seed(conn)
+}
+
+/// Add the offline-sync bookkeeping columns/tables to databases created by older
+/// versions of the app. `create_schema` already has them for fresh installs.
+fn migrate_sync_columns(conn: &Connection) -> rusqlite::Result<()> {
+    let has_col = |table: &str, col: &str| -> bool {
+        conn.prepare(&format!("PRAGMA table_info({table})"))
+            .ok()
+            .map(|mut stmt| {
+                let mut found = false;
+                if let Ok(mut rows) = stmt.query([]) {
+                    while let Ok(Some(row)) = rows.next() {
+                        if let Ok(name) = row.get::<_, String>(1) {
+                            if name == col {
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                found
+            })
+            .unwrap_or(true)
+    };
+    let ensure_col = |table: &str, col: &str, ddl: &str| -> rusqlite::Result<()> {
+        if !has_col(table, col) {
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {ddl}"), [])?;
+        }
+        Ok(())
+    };
+
+    for (table, col, ddl) in [
+        ("challans", "updated_at", "TEXT NOT NULL DEFAULT ''"),
+        ("challans", "pending_sync", "INTEGER NOT NULL DEFAULT 0"),
+        ("customers", "updated_at", "TEXT NOT NULL DEFAULT ''"),
+        ("customers", "pending_sync", "INTEGER NOT NULL DEFAULT 0"),
+        ("colours", "updated_at", "TEXT NOT NULL DEFAULT ''"),
+        ("colours", "pending_sync", "INTEGER NOT NULL DEFAULT 0"),
+        ("processors", "updated_at", "TEXT NOT NULL DEFAULT ''"),
+        ("processors", "pending_sync", "INTEGER NOT NULL DEFAULT 0"),
+        ("depths", "updated_at", "TEXT NOT NULL DEFAULT ''"),
+        ("depths", "pending_sync", "INTEGER NOT NULL DEFAULT 0"),
+        ("hsn_codes", "updated_at", "TEXT NOT NULL DEFAULT ''"),
+        ("hsn_codes", "pending_sync", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        ensure_col(table, col, ddl)?;
+    }
+
+    // Backfill updated_at from created_at for pre-existing rows.
+    for table in ["challans", "customers", "colours", "processors", "depths", "hsn_codes"] {
+        conn.execute(
+            &format!("UPDATE {table} SET updated_at = created_at WHERE updated_at = ''"),
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn ensure_sync_state(conn: &Connection) {
+    let _ = conn.execute(
+        "INSERT INTO sync_state (id, remote_url, token) VALUES (1, '', '') ON CONFLICT(id) DO NOTHING",
+        [],
+    );
 }
 
 /// Idempotent follow-up seed for databases created before these entries existed, so the
@@ -267,7 +332,9 @@ fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             code TEXT NOT NULL,
             description TEXT NOT NULL,
             tax_rate REAL NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            pending_sync INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS customers (
@@ -277,14 +344,18 @@ fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             address TEXT NOT NULL,
             state TEXT NOT NULL,
             state_code TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            pending_sync INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS colours (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             hex TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            pending_sync INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS processors (
@@ -292,7 +363,9 @@ fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             name TEXT NOT NULL,
             contact_name TEXT,
             phone TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            pending_sync INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS rates (
@@ -314,7 +387,9 @@ fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE TABLE IF NOT EXISTS depths (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            pending_sync INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS shades (
@@ -331,7 +406,9 @@ fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
             status TEXT NOT NULL,
             challan_date TEXT NOT NULL,
             data_json TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            pending_sync INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS invoices (
@@ -372,6 +449,32 @@ fn create_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE TABLE IF NOT EXISTS app_settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS sync_id_map (
+            kind TEXT NOT NULL,
+            local_id TEXT NOT NULL,
+            remote_uuid TEXT NOT NULL,
+            PRIMARY KEY (kind, local_id),
+            UNIQUE (kind, remote_uuid)
+        );
+
+        CREATE TABLE IF NOT EXISTS sync_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            remote_url TEXT NOT NULL DEFAULT '',
+            token TEXT NOT NULL DEFAULT '',
+            last_synced_at TEXT,
+            last_mode TEXT,
+            last_error TEXT,
+            last_online_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS sync_tombstones (
+            table_name TEXT NOT NULL,
+            row_id TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            synced INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (table_name, row_id)
         );
 
         CREATE INDEX IF NOT EXISTS idx_challans_type ON challans(document_type);

@@ -8,15 +8,15 @@ Compiled from `docs/CODEBASE_AUDIT.md` (2026-09-20). Revisit after each implemen
 | --- | --- | --- | --- |
 | 1 | Incoming Challan (create/edit/list/print) | COMPLETE | `ChallanFormPage` + `ChallanListPage`. |
 | 2 | Outgoing Challan (create/edit/list/print) | COMPLETE | Adds dispatch/transporter/auto-weight, rate suggestions. |
-| 3 | Incoming → Outgoing relationship | PARTIAL | Header-level link + autofill + date/party carry-over; roll-level linkage missing. |
+| 3 | Incoming → Outgoing relationship | PARTIAL | Header link + per-line dispatch allocations + availability; per-roll selection not yet. |
 | 4 | Scan / OCR (review before save) | PARTIAL | Gemini extraction end-to-end; needs real API key verification (BLOCKED). |
 | 5 | Customer / Party Master | COMPLETE | With GSTIN + local/online lookup. |
 | 6 | HSN Master | COMPLETE | code/description/tax_rate; used in forms & billing. |
 | 7 | Colour Master | COMPLETE | |
 | 8 | Depth Master | COMPLETE | Includes Super Dark + "-" (no depth). |
 | 9 | Process Master | PARTIAL | Table exists + datalist; UI tab removed; no report/filter usage. |
-| 10 | Roll / Lot tracking | NOT_STARTED | No roll-level inventory or partial dispatch. |
-| 11 | Weight tracking | PARTIAL | Auto-weight ~20 kg/roll; no running inventory/remaining. |
+| 10 | Roll / Lot tracking | PARTIAL | Per-line dispatch allocations with remaining rolls/weight, excluding already-dispatched; individual-roll selection not yet. |
+| 11 | Weight tracking | PARTIAL | ~20 kg/roll auto + per-line allocated dispatched weight; weight override flag for beyond-available. |
 | 12 | Search across challans | COMPLETE | ⌘K global search (fuse.js). |
 | 13 | List filters (composable) | PARTIAL | Challan/billing list filters exist; colour/depth/process/lot filters missing. |
 | 14 | Printing | COMPLETE | Challan + invoice print pages (`window.print`). |
@@ -39,7 +39,7 @@ Compiled from `docs/CODEBASE_AUDIT.md` (2026-09-20). Revisit after each implemen
 | 31 | AI automation (matching, duplicate detection, NLP search) | PARTIAL | OCR extraction + review only; suggestions/validation missing. |
 | 32 | AI safety / review-before-save | COMPLETE | Extraction never saves silently; edits logged. |
 | 33 | Auditability (created/updated by) | PARTIAL | `correction_logs` for OCR; no CreatedBy/UpdatedBy on docs. |
-| 34 | Automated tests | NOT_STARTED | No test framework. |
+| 34 | Automated tests | PARTIAL | First Rust unit tests added (dispatch allocation + remaining + validation). |
 | 35 | Performance (pagination, indexed search) | PARTIAL | Lists paginated; no N+1 mitigation review. |
 | 36 | Unit transfers / Returns / Attachments | NOT_STARTED | |
 

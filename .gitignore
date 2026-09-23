@@ -4,4 +4,6 @@ dist-ssr
 *.local
 src-tauri/target
 src-tauri/gen/schemas
-.DS_Storetsconfig.tsbuildinfo
+.DS_Store
+tsconfig.tsbuildinfo
+*.egg-info/

@@ -43,6 +43,15 @@ export const partySchema = z
   });
 export type Party = z.infer<typeof partySchema>;
 
+export const dispatchAllocationSchema = z.object({
+  incomingChallanId: z.string(),
+  incomingLineId: z.string(),
+  incomingLineIdx: z.coerce.number().int().nonnegative(),
+  rolls: z.coerce.number().nonnegative(),
+  weight: z.coerce.number().nonnegative(),
+});
+export type DispatchAllocation = z.infer<typeof dispatchAllocationSchema>;
+
 export const challanHeaderSchema = z.object({
   challanNo: z.string().nullable(),
   challanDate: z.string().min(1, "Challan date is required"),
@@ -51,6 +60,7 @@ export const challanHeaderSchema = z.object({
   dispatchDate: z.string().optional(),
   transporter: z.string().optional(),
   linkedIncomingChallanIds: z.array(z.string()).optional(),
+  dispatchAllocations: z.array(dispatchAllocationSchema).optional(),
   billing: partySchema,
   shipping: partySchema,
 });
@@ -132,6 +142,31 @@ export interface LinkedIncomingSummary {
   challanNo: string;
   challanDate: string;
   party: string;
+}
+
+/** Available/remaining quantities for one line item of an incoming challan. */
+export interface LineAvailability {
+  id: string;
+  idx: number;
+  lotNo?: string;
+  colour?: string;
+  depth?: string;
+  processName?: string;
+  totalRolls: number;
+  totalWeight: number;
+  dispatchRolls: number;
+  dispatchWeight: number;
+  remainingRolls: number;
+  remainingWeight: number;
+}
+
+/** Incoming challan with per-line roll/weight availability, for the outgoing form. */
+export interface LinkedIncomingDetails {
+  id: string;
+  challanNo: string;
+  challanDate: string;
+  party: string;
+  lines: LineAvailability[];
 }
 
 /** What the Rust commands return for a challan row: the stored record plus derived fields. */
