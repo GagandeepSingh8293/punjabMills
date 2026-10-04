@@ -1,6 +1,8 @@
+mod backup;
 mod commands;
 mod db;
 mod ocr;
+mod secrets;
 mod sync;
 mod util;
 
@@ -14,12 +16,13 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let db_path = dir.join("dyeai.db");
-            let conn = rusqlite::Connection::open(&db_path)?;
-            conn.pragma_update(None, "journal_mode", "WAL")?;
-            conn.pragma_update(None, "foreign_keys", "ON")?;
+            // SQLCipher: keyed from the OS keyring; plaintext legacy DBs are
+            // migrated to encrypted in place on first open.
+            let conn = db::open_encrypted(&dir, &db_path)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             db::init(&conn)?;
             app.manage(commands::DbState(Mutex::new(conn)));
-            sync::start(app.handle().clone(), db_path.clone());
+            sync::start(app.handle().clone(), dir.clone(), db_path.clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -59,6 +62,10 @@ pub fn run() {
             commands::set_gst_api_key,
             commands::get_gst_config,
             sync::get_sync_status,
+            backup::backup_now,
+            backup::restore_backup,
+            backup::list_backups,
+            backup::security_status_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

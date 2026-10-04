@@ -31,9 +31,9 @@ pub fn base_url() -> String {
 /// Start the LAN server in a background thread. The server opens its own
 /// connection to the same database file (the app's connection stays in the
 /// Tauri state); WAL mode makes the two connections safe to use together.
-pub fn start(app: AppHandle, db_path: std::path::PathBuf) {
+pub fn start(app: AppHandle, app_data_dir: std::path::PathBuf, db_path: std::path::PathBuf) {
     std::thread::spawn(move || {
-        let conn: Arc<Mutex<Connection>> = match Connection::open(&db_path) {
+        let conn: Arc<Mutex<Connection>> = match crate::db::open_encrypted(&app_data_dir, &db_path) {
             Ok(c) => Arc::new(Mutex::new(c)),
             Err(e) => {
                 let _ = app.emit("sync:status", json!({ "running": false, "error": e.to_string() }));
