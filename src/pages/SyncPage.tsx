@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
-import { Check, Copy, Link2, Smartphone, ArrowRight, RefreshCw, KeyRound, Sparkles, Save, Trash2 } from "lucide-react";
+import { Check, Copy, Link2, Smartphone, ArrowRight, RefreshCw, KeyRound, Sparkles, Save, Trash2, ShieldCheck, Loader2, Download } from "lucide-react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { PageHeader } from "@/components/ui/page-header";
 import { Button } from "@/components/ui/button";
@@ -12,7 +12,14 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { api } from "@/lib/api";
 import { SYNC_EVENTS, type GeminiConfigPayload, type SyncStatusPayload, type SyncedChallanPayload } from "@/types/socket-events";
+import type { BackupEntry, BackupSecurityStatus } from "@/types/backup";
 import type { ChallanRecord } from "@/types/challan";
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
 
 export function SyncPage() {
   const [status, setStatus] = useState<SyncStatusPayload | null>(null);
@@ -21,6 +28,56 @@ export function SyncPage() {
   const [config, setConfig] = useState<GeminiConfigPayload | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [keySaved, setKeySaved] = useState(false);
+
+  const [sec, setSec] = useState<BackupSecurityStatus | null>(null);
+  const [backups, setBackups] = useState<BackupEntry[]>([]);
+  const [creating, setCreating] = useState(false);
+  const [restoring, setRestoring] = useState<string | null>(null);
+  const [backupMsg, setBackupMsg] = useState<string | null>(null);
+
+  const loadBackups = () => {
+    void api.backup.list().then(setBackups).catch(() => {});
+    void api.backup.securityStatus().then(setSec).catch(() => {});
+  };
+
+  useEffect(() => {
+    loadBackups();
+  }, []);
+
+  const createBackup = async () => {
+    setCreating(true);
+    setBackupMsg(null);
+    try {
+      const created = await api.backup.create();
+      setBackupMsg(
+        created.encrypted ? `Backup saved: ${created.path} (${formatBytes(created.size)})` : "Backup created — encryption check failed!"
+      );
+      loadBackups();
+    } catch (e) {
+      setBackupMsg(`Backup failed: ${String(e)}`);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const restoreBackup = async (path: string) => {
+    if (!window.confirm("Replace the current database with this backup?\n\nThe app must be restarted afterwards.")) return;
+    setRestoring(path);
+    setBackupMsg(null);
+    try {
+      const result = await api.backup.restore(path);
+      setBackupMsg(
+        result.requiresRestart
+          ? "Restored. Please restart the app to load the backup."
+          : "Restored."
+      );
+      loadBackups();
+    } catch (e) {
+      setBackupMsg(`Restore failed: ${String(e)}`);
+    } finally {
+      setRestoring(null);
+    }
+  };
 
   useEffect(() => {
     let unlisteners: UnlistenFn[] = [];
@@ -175,6 +232,61 @@ export function SyncPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <ShieldCheck className="h-4 w-4" />
+            Security & encrypted backups
+            <Badge variant={sec?.encrypted ? "success" : "warning"}>
+              {sec ? (sec.encrypted ? "Encrypted" : "Not encrypted") : "…"}
+            </Badge>
+          </CardTitle>
+          <CardDescription>
+            Your database is SQLCipher-encrypted at rest — even the backup files are ciphertext-only. The key
+            lives in the OS keyring{sec?.keySource === "file" ? " (file fallback)" : ""}, so backups cannot be read
+            without this machine.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button onClick={() => void createBackup()} disabled={creating}>
+              {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {creating ? "Backing up…" : "Create encrypted backup"}
+            </Button>
+            <Button variant="outline" onClick={loadBackups}>
+              <RefreshCw className="h-4 w-4" />
+              Refresh
+            </Button>
+          </div>
+          {backupMsg && <p className="text-sm text-muted-foreground">{backupMsg}</p>}
+          {backups.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No backups yet — create one to start. (Directory: {sec?.backupsDir ?? "…"})</p>
+          ) : (
+            <ul className="space-y-2">
+              {backups.map((b) => (
+                <li key={b.path} className="flex items-center justify-between gap-2 rounded-lg border bg-card p-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{b.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {formatBytes(b.size)} · {new Date(b.modifiedAt * 1000).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={restoring === b.path}
+                    onClick={() => void restoreBackup(b.path)}
+                  >
+                    {restoring === b.path ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                    Restore
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

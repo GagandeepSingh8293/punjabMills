@@ -1,5 +1,78 @@
+use std::path::Path;
+
 use rusqlite::{Connection, params};
 use serde_json::{json, Value};
+
+/// Open (or create) the unit's SQLCipher-encrypted database.
+///
+/// Sets the raw 32-byte key from the OS keyring, migrates any legacy
+/// plaintext database to encrypted in place (auto-upgrade path), and applies
+/// the always-on pragmas. Every connection — the app state connection, the
+/// phone-server thread connection — must go through here so the whole unit
+/// shares one encrypted file.
+pub fn open_encrypted(app_data_dir: &Path, db_path: &Path) -> Result<Connection, String> {
+    let (key, _source) = crate::secrets::load_or_create_key(app_data_dir)?;
+    open_encrypted_with_key(db_path, &key)
+}
+
+/// Core of `open_encrypted` with an explicit raw key (used by tests).
+pub fn open_encrypted_with_key(db_path: &Path, key: &[u8]) -> Result<Connection, String> {
+    migrate_plaintext_in_place(db_path, key)?;
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    // Raw 32-byte key as a hex BLOB — SQLCipher treats blob keys as raw (no PBKDF2).
+    conn.execute_batch(&format!("PRAGMA key = \"x'{}'\";", hex::encode(key)))
+        .map_err(|e| format!("database key rejected by SQLCipher: {e}"))?;
+    // Upgrade path for older SQLCipher page formats; no-op on current files.
+    let _ = conn.execute_batch("PRAGMA cipher_migrate;");
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+        .map_err(|e| e.to_string())?;
+    Ok(conn)
+}
+
+const PLAINTEXT_HEADER: &[u8] = b"SQLite format 3\0";
+
+/// True when `path` exists and does not already carry a plaintext SQLite
+/// header — i.e. it's either SQLCipher or not a database at all.
+pub fn is_sqlcipher(path: &Path) -> bool {
+    match std::fs::read(path) {
+        Ok(bytes) => !bytes.starts_with(PLAINTEXT_HEADER) && bytes.len() >= 16,
+        Err(_) => true,
+    }
+}
+
+/// Convert a legacy plaintext database to SQLCipher in place using
+/// `sqlcipher_export` (rewrites every page with the key). Returns true if it
+/// actually migrated. `cipher_migrate` is a no-op for plaintext sources, which
+/// is why we do an export into a keyed temp file and swap it in.
+pub fn migrate_plaintext_in_place(path: &Path, key: &[u8]) -> Result<bool, String> {
+    if !path.exists() || is_sqlcipher(path) {
+        return Ok(false);
+    }
+    if std::fs::metadata(path).map_err(|e| e.to_string())?.len() == 0 {
+        return Ok(false); // brand-new/empty file — open will create it encrypted.
+    }
+    let tmp = path.with_extension("db.migrate");
+    let _ = std::fs::remove_file(&tmp);
+
+    let src = Connection::open(path).map_err(|e| e.to_string())?;
+    src.execute_batch(&format!(
+        "ATTACH DATABASE '{}' AS enc KEY \"x'{}'\";",
+        tmp.to_string_lossy().replace('\'', "''"),
+        hex::encode(key)
+    ))
+    .map_err(|e| format!("attach failed during migration: {e}"))?;
+    src.execute_batch("SELECT sqlcipher_export('enc');")
+        .map_err(|e| format!("export failed during migration: {e}"))?;
+    src.execute_batch("DETACH DATABASE enc;")
+        .map_err(|e| format!("detach failed during migration: {e}"))?;
+    drop(src);
+
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    for suffix in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{}", path.to_string_lossy(), suffix));
+    }
+    Ok(true)
+}
 
 /// Round a float to 2 decimal places, JavaScript-style (`Math.round(x*100)/100`).
 pub fn round2(x: f64) -> f64 {

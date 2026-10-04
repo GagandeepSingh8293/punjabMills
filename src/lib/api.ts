@@ -9,6 +9,7 @@ import type { ActivityFeedResponse } from "@/types/activity";
 import type { GlobalSearchResponse } from "@/types/search";
 import type { ChallanFilterOptions } from "@/types/api";
 import type { SyncStatusPayload, GeminiConfigPayload, GstConfigPayload, ScanPhotoPayload } from "@/types/socket-events";
+import type { BackupEntry, BackupCreated, BackupRestored, BackupSecurityStatus } from "@/types/backup";
 
 export interface GstLookupResult {
   found: boolean;
@@ -139,5 +140,16 @@ export const api = {
       invoke<GeminiConfigPayload>("get_gemini_config").catch((e) => Promise.reject(err(e))),
     setApiKey: (key: string): Promise<void> =>
       invoke<void>("set_gemini_api_key", { key }).catch((e) => Promise.reject(err(e))),
+  },
+
+  backup: {
+    securityStatus: (): Promise<BackupSecurityStatus> =>
+      invoke<BackupSecurityStatus>("security_status_cmd").catch((e) => Promise.reject(err(e))),
+    create: (): Promise<BackupCreated> =>
+      invoke<BackupCreated>("backup_now").catch((e) => Promise.reject(err(e))),
+    list: (): Promise<BackupEntry[]> =>
+      invoke<BackupEntry[]>("list_backups").catch((e) => Promise.reject(err(e))),
+    restore: (backupPath: string): Promise<BackupRestored> =>
+      invoke<BackupRestored>("restore_backup", { backupPath }).catch((e) => Promise.reject(err(e))),
   },
 };
